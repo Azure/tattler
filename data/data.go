@@ -106,7 +106,7 @@ func NewEntry(obj runtime.Object, st SourceType, ct ChangeType) (Entry, error) {
 func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 	nv := reflect.ValueOf(obj)
 	if nv.IsValid() {
-		if reflect.ValueOf(obj).IsZero() {
+		if nv.IsZero() {
 			return Entry{}, fmt.Errorf("new object is nil")
 		}
 	}
