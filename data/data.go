@@ -6,7 +6,6 @@ package data
 import (
 	"errors"
 	"fmt"
-	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,18 +46,20 @@ const (
 	OTPersistentVolume ObjectType = 4 // PersistentVolume
 )
 
+//go:generate stringer -type=ChangeType -linecomment
+
 // ChangeType is the type of change.
 type ChangeType uint8
 
 const (
 	// CTUnknown indicates a bug in the code.
-	CTUnknown ChangeType = 0
+	CTUnknown ChangeType = 0 // Unknown
 	// CTAdd indicates the data was added.
-	CTAdd ChangeType = 1
+	CTAdd ChangeType = 1 // Add
 	// CTUpdate indicates the data was updated.
-	CTUpdate ChangeType = 2
+	CTUpdate ChangeType = 2 // Update
 	// CTDelete indicates the data was deleted.
-	CTDelete ChangeType = 3
+	CTDelete ChangeType = 3 // Delete
 )
 
 // ingestObj is a generic type for objects that can be ingested.
@@ -104,11 +105,8 @@ func NewEntry(obj runtime.Object, st SourceType, ct ChangeType) (Entry, error) {
 
 // newEntry creates a new Entry.
 func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
-	nv := reflect.ValueOf(obj)
-	if nv.IsValid() {
-		if nv.IsZero() {
-			return Entry{}, fmt.Errorf("new object is nil")
-		}
+	if obj == nil {
+		return Entry{}, fmt.Errorf("new object is nil")
 	}
 
 	var ot ObjectType
