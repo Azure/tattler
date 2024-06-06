@@ -141,22 +141,23 @@ func MustNewEntry[T runtime.Object](obj T, st SourceType, ct ChangeType) Entry {
 	return e
 }
 
-// UID returns the UID of the underlying object. This is always the latest change.
+// UID returns the UID of the underlying object.
 func (e Entry) UID() types.UID {
 	return e.uid
 }
 
-// ObjectType returns the type of the object.
+// ObjectType returns the type of the underlying object to allow
+// for calling the correct decoder method such as Node, Pod, Namespace, etc.
 func (e Entry) ObjectType() ObjectType {
 	return e.objectType
 }
 
-// ChangeType returns the type of change.
+// ChangeType returns the type of change that occurred, add, update or delete.
 func (e Entry) ChangeType() ChangeType {
 	return e.changeType
 }
 
-// SourceType returns the source type.
+// SourceType returns the data source of the entry.
 func (e Entry) SourceType() SourceType {
 	return e.sourceType
 }
