@@ -175,3 +175,39 @@ func TestHandleData(t *testing.T) {
 		}
 	}
 }
+
+// This is mostly testing that we don't put the wrong data in the wrong pool.
+func TestRecycle(t *testing.T) {
+	batches := Batches{
+		data.STInformer: Batch{
+			"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+			"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+		},
+	}
+
+	batches.Recycle()
+
+	// If we put the wrong data in the wrong pool, these will panic.
+	bs := getBatches()
+	if diff := pretty.Compare(Batches{}, bs); diff != "" {
+		t.Errorf("TestRecycle: -want/+got:\n%s", diff)
+	}
+	b := getBatch()
+	if diff := pretty.Compare(Batch{}, b); diff != "" {
+		t.Errorf("TestRecycle: -want/+got:\n%s", diff)
+	}
+}
+
+func TestGetBatches(t *testing.T) {
+	b := getBatches()
+	if diff := pretty.Compare(Batches{}, b); diff != "" {
+		t.Errorf("TestGetBatches: -want/+got:\n%s", diff)
+	}
+}
+
+func TestGetBatch(t *testing.T) {
+	b := getBatch()
+	if diff := pretty.Compare(Batch{}, b); diff != "" {
+		t.Errorf("TestGetBatch: -want/+got:\n%s", diff)
+	}
+}

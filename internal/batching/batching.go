@@ -61,6 +61,15 @@ var (
 	}
 )
 
+func putPool(a any) {
+	switch v := a.(type) {
+	case Batches:
+		batchesPool.Put(&v)
+	case Batch:
+		batchPool.Put(&v)
+	}
+}
+
 func getBatches() Batches {
 	return *batchesPool.Get().(*Batches)
 }
@@ -73,15 +82,15 @@ func getBatch() Batch {
 type Batches map[data.SourceType]Batch
 
 // Recyle recycles the batches. It should not be used after this.
-func (b Batches) Recyle() {
+func (b Batches) Recycle() {
 	for batchesK, batch := range b {
 		for batchK := range batch {
 			delete(batch, batchK)
 		}
-		batchPool.Put(&batch)
+		putPool(batch)
 		delete(b, batchesK)
 	}
-	batchPool.Put(&b)
+	putPool(b)
 }
 
 // Iter returns a channel that iterates over the data. Closing ctx will stop the iteration.
