@@ -101,22 +101,20 @@ func (s *Secrets) scrubber(e data.Entry) error {
 // scrubPod scrubs sensitive information from a pod.
 func (s *Secrets) scrubPod(p *corev1.Pod) {
 	spec := p.Spec
-	for i, cont := range spec.Containers {
-		spec.Containers[i] = s.scrubContainer(cont)
+	for _, cont := range spec.Containers {
+		s.scrubContainer(cont)
 	}
-	p.Spec = spec
 }
 
 var secretRE = regexp.MustCompile(`(?i)(token|pass|pwd|jwt|hash|secret|bearer|cred|secure|signing|cert|code|key)`)
 var redacted = "REDACTED"
 
 // scrubContainer scrubs sensitive information from a container.
-func (s *Secrets) scrubContainer(c corev1.Container) corev1.Container {
+func (s *Secrets) scrubContainer(c corev1.Container) {
 	for i, ev := range c.Env {
 		if secretRE.MatchString(ev.Name) {
 			ev.Value = redacted
 			c.Env[i] = ev
 		}
 	}
-	return c
 }

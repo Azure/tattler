@@ -14,31 +14,48 @@ func TestScrubber(t *testing.T) {
 
 	secretName := "DB_PASSWORD"
 
+	secretEnv := corev1.EnvVar{Name: secretName, Value: "password123"}
+	nonSecretEnv := corev1.EnvVar{Name: "non-special", Value: "value"}
+	redactedEnv := corev1.EnvVar{Name: secretName, Value: "REDACTED"}
+
 	tests := []struct {
-		name         string
-		data         data.Entry
-		want         data.Entry
-		wantErr      bool
-		secretChange bool
+		name    string
+		data    data.Entry
+		want    data.Entry
+		wantErr bool
 	}{
 		{
 			name: "Type is not a pod",
 			data: data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd),
+			want: data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd),
 		},
 		{
-			name:         "Success",
-			secretChange: true,
+			name: "Success",
 			data: data.MustNewEntry(
 				&corev1.Pod{
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{
 							{
-								Env: []corev1.EnvVar{
-									{
-										Name:  secretName,
-										Value: "password123",
-									},
-								},
+								Env: []corev1.EnvVar{secretEnv, nonSecretEnv, secretEnv},
+							},
+							{
+								Env: []corev1.EnvVar{secretEnv, nonSecretEnv, secretEnv},
+							},
+						},
+					},
+				},
+				data.STInformer,
+				data.CTAdd,
+			),
+			want: data.MustNewEntry(
+				&corev1.Pod{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Env: []corev1.EnvVar{redactedEnv, nonSecretEnv, redactedEnv},
+							},
+							{
+								Env: []corev1.EnvVar{redactedEnv, nonSecretEnv, redactedEnv},
 							},
 						},
 					},
@@ -62,18 +79,10 @@ func TestScrubber(t *testing.T) {
 		case err != nil:
 			continue
 		}
-		<-s.out
 
-		if test.secretChange {
-			pod, err := test.data.Pod()
-			if err != nil {
-				panic(err)
-			}
-			if pod.Spec.Containers[0].Env[0].Value != "REDACTED" {
-				t.Errorf("TestScrubInformer(%s): got %s, want REDACTED", test.name, pod.Spec.Containers[0].Env[0].Value)
-			}
+		if diff := pretty.Compare(test.want, <-s.out); diff != "" {
+			t.Errorf("TestScrubInformer(%s): -want/+got:\n%s", test.name, diff)
 		}
-
 	}
 }
 
@@ -169,9 +178,9 @@ func TestScrubContainer(t *testing.T) {
 
 	for _, test := range tests {
 		s := &Secrets{}
-		got := s.scrubContainer(test.container)
+		s.scrubContainer(test.container)
 
-		if diff := pretty.Compare(test.want, got); diff != "" {
+		if diff := pretty.Compare(test.want, test.container); diff != "" {
 			t.Errorf("TestScrubContainer(%s): -want/+got:\n%s", test.name, diff)
 		}
 	}
