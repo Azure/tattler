@@ -109,7 +109,7 @@ func TestRegister(t *testing.T) {
 		}
 
 		if len(b.routes) != 1 {
-			t.Errorf("TestRegister(%s): route was no added as expected", test.name)
+			t.Errorf("TestRegister(%s): route was not added as expected", test.name)
 		}
 	}
 }
