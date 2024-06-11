@@ -11,11 +11,12 @@ func _() {
 	_ = x[STUnknown-0]
 	_ = x[STInformer-1]
 	_ = x[STWatchList-2]
+	_ = x[STEtcd-3]
 }
 
-const _SourceType_name = "UnknownInformerWatchList"
+const _SourceType_name = "UnknownInformerWatchListEtcd"
 
-var _SourceType_index = [...]uint8{0, 7, 15, 24}
+var _SourceType_index = [...]uint8{0, 7, 15, 24, 28}
 
 func (i SourceType) String() string {
 	if i >= SourceType(len(_SourceType_index)-1) {

@@ -1,6 +1,6 @@
-// Package filter provides the data types needed to implement a filter cache
+// Package items provides the data types needed to implement a filter cache
 // for filtering out events that are older than the current version.
-package filter
+package items
 
 import (
 	"time"

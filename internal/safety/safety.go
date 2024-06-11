@@ -24,7 +24,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
 
 	"github.com/Azure/tattler/data"
 
@@ -106,15 +105,23 @@ func (s *Secrets) scrubPod(p *corev1.Pod) {
 	}
 }
 
+// This is the regular expression that is used to match environment variables that are sensitive.
+// And the code that would be used to scrub the sensitive information.
+// Commented out for now because we are going to scrub all values.
+/*
 var secretRE = regexp.MustCompile(`(?i)(token|pass|pwd|jwt|hash|secret|bearer|cred|secure|signing|cert|code|key)`)
+
+if secretRE.MatchString(ev.Name) {
+		ev.Value = redacted
+		c.Env[i] = ev
+}
+*/
 var redacted = "REDACTED"
 
 // scrubContainer scrubs sensitive information from a container.
 func (s *Secrets) scrubContainer(c corev1.Container) {
 	for i, ev := range c.Env {
-		if secretRE.MatchString(ev.Name) {
-			ev.Value = redacted
-			c.Env[i] = ev
-		}
+		ev.Value = redacted
+		c.Env[i] = ev
 	}
 }

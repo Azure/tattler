@@ -3,12 +3,44 @@ package safety
 import (
 	"testing"
 
-	"github.com/Azure/tattler/data"
-
-	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
 )
 
+func TestScrubPod(t *testing.T) {
+	t.Parallel()
+
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Env: []corev1.EnvVar{
+						{
+							Name:  "DB_PASSWORD",
+							Value: "password123",
+						},
+						{
+							Name:  "Does not matter",
+							Value: "whatever",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	s := &Secrets{}
+	s.scrubPod(pod)
+
+	for _, env := range pod.Spec.Containers[0].Env {
+		if env.Value != "REDACTED" {
+			t.Errorf("TestScrubPod: got %s, want REDACTED", pod.Spec.Containers[0].Env[0].Value)
+		}
+	}
+}
+
+// Commented out because we are scrubbing everything at the moment.  In the future,
+// we may want to scrub only certain fields again.
+/*
 func TestScrubber(t *testing.T) {
 	t.Parallel()
 
@@ -185,3 +217,4 @@ func TestScrubContainer(t *testing.T) {
 		}
 	}
 }
+*/
