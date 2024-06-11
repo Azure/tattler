@@ -26,6 +26,7 @@ const (
 	STUnknown   SourceType = 0 // Unknown
 	STInformer  SourceType = 1 // Informer
 	STWatchList SourceType = 2 // WatchList
+	STEtcd      SourceType = 3 // Etcd
 )
 
 //go:generate stringer -type=ObjectType -linecomment

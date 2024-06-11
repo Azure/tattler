@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
-	"github.com/Azure/tattler/internal/readers/apiserver/watchlist/filter/standard"
+	"github.com/Azure/tattler/internal/filter/types/watchlist"
 	"github.com/gostdlib/concurrency/prim/wait"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,10 +22,10 @@ import (
 type Reader struct {
 	clientset     *kubernetes.Clientset
 	retrieveTypes RetrieveType
-	cache         *standard.Filter
+	cache         *watchlist.Filter
 	cacheIn       chan watch.Event
 	cacheOut      chan watch.Event
-	filterOpts    []standard.Option
+	filterOpts    []watchlist.Option
 
 	ch            chan data.Entry
 	waitWatchers  wait.Group
@@ -53,7 +53,7 @@ func WithLogger(log *slog.Logger) Option {
 // WithFilterSize sets the initial size of the filter map.
 func WithFilterSize(size int) Option {
 	return func(c *Reader) error {
-		c.filterOpts = append(c.filterOpts, standard.WithSized(size))
+		c.filterOpts = append(c.filterOpts, watchlist.WithSized(size))
 		return nil
 	}
 }
@@ -221,7 +221,7 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt R
 		}
 	}
 
-	if err := r.watch(ctx, RTNamespace, ws); err != nil {
+	if err := r.watch(ctx, rt, ws); err != nil {
 		return fmt.Errorf("error starting namespace watcher: %v", err)
 	}
 	if ctx.Err() != nil {
@@ -237,7 +237,7 @@ func (r *Reader) setupCache(ctx context.Context) error {
 	r.cacheOut = make(chan watch.Event, 1)
 
 	var err error
-	r.cache, err = standard.New(ctx, r.cacheIn, r.cacheOut, r.filterOpts...)
+	r.cache, err = watchlist.New(ctx, r.cacheIn, r.cacheOut, r.filterOpts...)
 	if err != nil {
 		return fmt.Errorf("error creating cache: %v", err)
 	}

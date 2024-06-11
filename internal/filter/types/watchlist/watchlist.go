@@ -1,13 +1,12 @@
-// Package standard provides a filter cache that stores the latest version information for objects
+// Package watchlist provides a filter cache that stores the latest version information for objects
 // using a map with no locks.
-package standard
+package watchlist
 
 import (
 	"context"
 	"errors"
 
-	"github.com/Azure/tattler/internal/readers/apiserver/watchlist/filter"
-
+	"github.com/Azure/tattler/internal/filter/items"
 	"github.com/gostdlib/concurrency/prim/wait"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
@@ -17,7 +16,7 @@ import (
 type Filter struct {
 	in  chan watch.Event
 	out chan watch.Event
-	m   map[types.UID]filter.Item
+	m   map[types.UID]items.Item
 }
 
 // Option is a opional argument for New().
@@ -29,7 +28,7 @@ func WithSized(size int) Option {
 		if size < 0 {
 			return errors.New("size must be greater than 0")
 		}
-		c.m = make(map[types.UID]filter.Item, size)
+		c.m = make(map[types.UID]items.Item, size)
 		return nil
 	}
 }
@@ -49,7 +48,7 @@ func New(ctx context.Context, in, out chan watch.Event, options ...Option) (*Fil
 		}
 	}
 	if cc.m == nil {
-		cc.m = map[types.UID]filter.Item{}
+		cc.m = map[types.UID]items.Item{}
 	}
 
 	g := wait.Group{}
@@ -76,7 +75,7 @@ func (c *Filter) run() {
 
 // handleEvent looks at the event type and acts accordingly.
 func (c *Filter) handleEvent(event watch.Event) {
-	obj := event.Object.(filter.Object)
+	obj := event.Object.(items.Object)
 	if event.Type == watch.Deleted {
 		delete(c.m, obj.GetUID())
 		c.out <- event
@@ -90,10 +89,10 @@ func (c *Filter) handleEvent(event watch.Event) {
 
 // setMapItem sets the item in the map if it doesn't exist or if the new pod is newer.
 // Returns true if the item was set, false if the item was not set.
-func (c *Filter) setMapItem(newItem filter.Object) (cached bool) {
+func (c *Filter) setMapItem(newItem items.Object) (cached bool) {
 	oldItem, ok := c.m[newItem.GetUID()]
 	if !ok {
-		c.m[newItem.GetUID()] = filter.New(newItem)
+		c.m[newItem.GetUID()] = items.New(newItem)
 		return true
 	}
 
@@ -103,6 +102,6 @@ func (c *Filter) setMapItem(newItem filter.Object) (cached bool) {
 	}
 
 	// We need to update the item in the map.
-	c.m[newItem.GetUID()] = filter.New(newItem)
+	c.m[newItem.GetUID()] = items.New(newItem)
 	return true
 }

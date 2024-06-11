@@ -98,6 +98,16 @@ func (b *Batches) Register(ctx context.Context, name string, ch chan batching.Ba
 	return nil
 }
 
+// Exists returns true if a route with the given name exists.
+func (b *Batches) Exists(name string) bool {
+	for _, r := range b.routes {
+		if r.name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Start starts routing data coming from input. This can be stopped by closing the input channel.
 func (b *Batches) Start(ctx context.Context) error {
 	if len(b.routes) == 0 {
