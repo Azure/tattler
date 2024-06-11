@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Azure/tattler/batching"
 	"github.com/Azure/tattler/data"
-	"github.com/Azure/tattler/internal/batching"
 	preprocess "github.com/Azure/tattler/internal/preprocess"
 	"github.com/Azure/tattler/internal/routing"
 	"github.com/Azure/tattler/internal/safety"

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Azure/tattler/internal/batching"
+	"github.com/Azure/tattler/batching"
 
 	"github.com/kylelemons/godebug/pretty"
 )
