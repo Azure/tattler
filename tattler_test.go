@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/tattler/batching"
 	"github.com/Azure/tattler/data"
-	"github.com/Azure/tattler/internal/batching"
 	"github.com/Azure/tattler/internal/routing"
 )
 

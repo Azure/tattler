@@ -25,7 +25,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/Azure/tattler/internal/batching"
+	"github.com/Azure/tattler/batching"
 
 	"github.com/gostdlib/concurrency/prim/wait"
 )
