@@ -5,7 +5,6 @@ package items
 import (
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -13,7 +12,7 @@ import (
 type Object interface {
 	GetUID() types.UID
 	GetResourceVersion() string
-	GetCreationTimestamp() metav1.Time
+	GetGeneration() int64
 }
 
 // Item represents the needed fields to filter an object.
@@ -24,8 +23,8 @@ type Item struct {
 	ResourceVersion string
 	// LastUpdate is the last time the item was updated in unix nano.
 	LastUpdate int64
-	// Creation is the creation time of the object in unix nano.
-	Creation int64
+	// Generation is the generation of the object.
+	Generation int64
 }
 
 // IsNewer returns true if the item is newer than the cacheable object.
@@ -33,17 +32,17 @@ func (i Item) IsNewer(c Object) bool {
 	if i.ResourceVersion == c.GetResourceVersion() {
 		return false
 	}
-	if i.Creation > c.GetCreationTimestamp().UnixNano() {
-		return false
+	if i.Generation >= c.GetGeneration() {
+		return true
 	}
-	return true
+	return false
 }
 
 // New creates a new Item from a Cacheable object.
 func New(o Object) Item {
 	i := Item{
 		ResourceVersion: o.GetResourceVersion(),
-		Creation:        o.GetCreationTimestamp().Time.UnixNano(),
+		Generation:      o.GetGeneration(),
 		LastUpdate:      time.Now().UnixNano(),
 	}
 	return i
