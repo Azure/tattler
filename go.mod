@@ -7,31 +7,23 @@ toolchain go1.22.3
 require (
 	github.com/go-json-experiment/json v0.0.0-20240418180308-af2d5061e6c2
 	github.com/gostdlib/concurrency v0.0.0-20240403195145-a5b82e576be2
-	github.com/kr/pretty v0.3.1
+	go.etcd.io/etcd/client/v3 v3.5.14
 	go.uber.org/automaxprocs v1.5.3
+	google.golang.org/grpc v1.64.0
 	k8s.io/api v0.30.1
 	k8s.io/client-go v0.30.1
 )
 
 require (
-	github.com/coreos/etcd v3.3.27+incompatible // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
-	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
-	github.com/coreos/pkg v0.0.0-20240122114842-bbd7aa9bf6fb // indirect
-	github.com/kr/text v0.2.0 // indirect
-	github.com/rogpeppe/go-internal v1.10.0 // indirect
-	go.etcd.io/etcd v3.3.27+incompatible // indirect
 	go.etcd.io/etcd/api/v3 v3.5.14 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.14 // indirect
-	go.etcd.io/etcd/client/v3 v3.5.14 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/tools v0.19.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240318140521-94a12d6c2237 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237 // indirect
-	google.golang.org/grpc v1.64.0 // indirect
-	k8s.io/kubernetes v1.30.1 // indirect
 )
 
 require (
@@ -47,7 +39,7 @@ require (
 	github.com/google/gnostic-models v0.6.8 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/google/uuid v1.6.0
 	github.com/gostdlib/internals v0.0.0-20240319155855-57c259c0554f // indirect
 	github.com/imdario/mergo v0.3.6 // indirect
 	github.com/josharian/intern v1.0.0 // indirect

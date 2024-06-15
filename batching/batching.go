@@ -111,6 +111,15 @@ func (b Batches) Iter(ctx context.Context) <-chan data.Entry {
 	return ch
 }
 
+// Len returns the length of the batches.
+func (b Batches) Len() int {
+	l := 0
+	for _, batch := range b {
+		l += len(batch)
+	}
+	return l
+}
+
 // Batch is a map of UIDs to data.
 type Batch map[types.UID]data.Entry
 
@@ -148,7 +157,9 @@ func WithLogger(log *slog.Logger) Option {
 
 // WithBatchSize sets the batch size at which to emit at. So if you set this to 1000, it will
 // emit when it has 1000 items in the batch if we haven't hit the timespan. If the timespan
-// is hit, it will emit regardless of the batch size.
+// is hit, it will emit regardless of the batch size. This defaults to 1000 items. Setting this
+// to zero will make this only emit when the timespan is hit. However, this is rarely a good idea,
+// as spikes can cause this to eat memory like crazy and cause serious CPU burn.
 func WithBatchSize(size int) Option {
 	return func(b *Batcher) error {
 		if size < 0 {
@@ -166,10 +177,11 @@ func New(ctx context.Context, in <-chan data.Entry, out chan Batches, timespan t
 	}
 
 	b := &Batcher{
-		timespan: timespan,
-		in:       in,
-		out:      out,
-		log:      slog.Default(),
+		timespan:  timespan,
+		batchSize: 1000,
+		in:        in,
+		out:       out,
+		log:       slog.Default(),
 	}
 	b.current = getBatches()
 	b.emitter = b.emit
@@ -195,6 +207,7 @@ func (b *Batcher) run() {
 
 	for {
 		timer.Reset(b.timespan)
+
 		exit, err := b.handleInput(timer.C)
 		if err != nil {
 			b.log.Error(err.Error())
@@ -215,11 +228,12 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 		if err := b.handleData(data); err != nil {
 			return false, err
 		}
-		if b.batchSize > 0 && len(b.current) == b.batchSize {
+
+		if b.batchSize > 0 && (b.current.Len() >= b.batchSize) {
 			b.emitter()
 		}
 	case <-tick:
-		if len(b.current) == 0 {
+		if b.current.Len() == 0 {
 			return false, nil
 		}
 		b.emitter()
