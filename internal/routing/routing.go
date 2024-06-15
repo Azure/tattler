@@ -148,7 +148,7 @@ func (b *Batches) push(ctx context.Context, r route, batches batching.Batches) e
 	select {
 	case r.out <- batches:
 	default:
-		return fmt.Errorf("routing.Batches.handleInformer: dropping data to slow receiver(%s)", r.name)
+		return fmt.Errorf("routing.Batches.push: dropping data to slow receiver(%s)", r.name)
 	}
 	return nil
 }

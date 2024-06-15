@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
+	"github.com/google/uuid"
 
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
@@ -22,14 +23,23 @@ func TestHandleInput(t *testing.T) {
 		UID: types.UID("test"),
 	}
 
+	batch99 := Batch{}
+	for i := 0; i < 99; i++ {
+		om := v1.ObjectMeta{
+			UID: types.UID("test"),
+		}
+		batch99[types.UID(uuid.New().String())] = data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd)
+	}
+
 	tests := []struct {
-		name     string
-		in       func() chan data.Entry
-		tick     <-chan time.Time
-		current  Batches
-		wantEmit bool
-		wantExit bool
-		wantErr  bool
+		name      string
+		in        func() chan data.Entry
+		tick      <-chan time.Time
+		batchSize int
+		current   Batches
+		wantEmit  bool
+		wantExit  bool
+		wantErr   bool
 	}{
 		{
 			name:     "Input channel is closed",
@@ -58,12 +68,27 @@ func TestHandleInput(t *testing.T) {
 			in:   func() chan data.Entry { return make(chan data.Entry) },
 			tick: time.After(1 * time.Microsecond),
 		},
+
 		{
-			name:     "Successful tick and data to send",
-			in:       func() chan data.Entry { return make(chan data.Entry) },
-			tick:     time.After(1 * time.Microsecond),
-			current:  Batches{data.STInformer: Batch{}},
+			name: "Successful tick and data to send",
+			in:   func() chan data.Entry { return make(chan data.Entry) },
+			tick: time.After(1 * time.Microsecond),
+			current: Batches{data.STInformer: Batch{
+				types.UID(uuid.New().String()): data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd),
+			}},
 			wantEmit: true,
+		},
+		{
+			name: "After 100 items",
+			in: func() chan data.Entry {
+				ch := make(chan data.Entry, 1)
+				ch <- data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd)
+				return ch
+			},
+			batchSize: 100,
+			tick:      time.After(1 * time.Hour),
+			current:   Batches{data.STInformer: batch99},
+			wantEmit:  true,
 		},
 	}
 
@@ -72,8 +97,9 @@ func TestHandleInput(t *testing.T) {
 			test.current = getBatches()
 		}
 		b := &Batcher{
-			in:      test.in(),
-			current: test.current,
+			in:        test.in(),
+			batchSize: test.batchSize,
+			current:   test.current,
 		}
 		var emitted bool
 		emitter := func() {
@@ -178,6 +204,8 @@ func TestHandleData(t *testing.T) {
 
 // This is mostly testing that we don't put the wrong data in the wrong pool.
 func TestRecycle(t *testing.T) {
+	t.Parallel()
+
 	batches := Batches{
 		data.STInformer: Batch{
 			"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
@@ -199,6 +227,8 @@ func TestRecycle(t *testing.T) {
 }
 
 func TestGetBatches(t *testing.T) {
+	t.Parallel()
+
 	b := getBatches()
 	if diff := pretty.Compare(Batches{}, b); diff != "" {
 		t.Errorf("TestGetBatches: -want/+got:\n%s", diff)
@@ -206,6 +236,8 @@ func TestGetBatches(t *testing.T) {
 }
 
 func TestGetBatch(t *testing.T) {
+	t.Parallel()
+
 	b := getBatch()
 	if diff := pretty.Compare(Batch{}, b); diff != "" {
 		t.Errorf("TestGetBatch: -want/+got:\n%s", diff)
