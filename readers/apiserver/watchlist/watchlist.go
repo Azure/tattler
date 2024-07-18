@@ -197,7 +197,7 @@ func (r *Reader) Run(ctx context.Context) (err error) {
 // So, we have to watch for a bit in another goroutine and then cancel the context if it doesn't connect.
 func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt RetrieveType) error {
 	finished := make(chan struct{})
-	timer := time.After(3 * time.Second)
+	timer := time.After(30 * time.Second)
 
 	go func() {
 		select {
