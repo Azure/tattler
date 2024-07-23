@@ -5,6 +5,7 @@ go 1.22.0
 toolchain go1.22.3
 
 require (
+	github.com/Azure/retry v0.0.0-20240325164105-70e16f388626
 	github.com/go-json-experiment/json v0.0.0-20240418180308-af2d5061e6c2
 	github.com/gostdlib/concurrency v0.0.0-20240403195145-a5b82e576be2
 	go.etcd.io/etcd/client/v3 v3.5.14
@@ -17,6 +18,10 @@ require (
 require (
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
+	github.com/jedib0t/go-pretty/v6 v6.5.6 // indirect
+	github.com/mattn/go-runewidth v0.0.15 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/sanity-io/litter v1.5.5 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.14 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.14 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
