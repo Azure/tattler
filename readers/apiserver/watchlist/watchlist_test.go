@@ -3,450 +3,232 @@ package watchlist
 import (
 	"context"
 	"errors"
-	"log"
-	"reflect"
-	"slices"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/Azure/retry/exponential"
 	"github.com/Azure/tattler/data"
-	"github.com/kylelemons/godebug/pretty"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/watch"
 )
 
-// To allow embedding in the fakeObject struct, because they
-// have the same Object name.
-type rto = runtime.Object
-type mto = metav1.Object
-
-type fakeObject struct {
-	rto
-	mto
-
-	rv string
+type fakeReader struct {
+	closeCalled  bool
+	setOutCalled bool
+	runErr       error
 }
 
-func (f *fakeObject) GetResourceVersion() string {
-	return f.rv
+func (f *fakeReader) Close(ctx context.Context) error {
+	f.closeCalled = true
+	return nil
 }
 
-type fakeWatcher struct {
-	watch.Interface
+func (f *fakeReader) SetOut(ctx context.Context, out chan data.Entry) error {
+	f.setOutCalled = true
+	return nil
+}
+
+func (f *fakeReader) Run(ctx context.Context) error {
+	if f.runErr != nil {
+		return f.runErr
+	}
+	return nil
+}
+
+func (f *fakeReader) Logger() *slog.Logger {
+	return nil
+}
+
+func (f *fakeReader) Relist() time.Duration {
+	return 1 * time.Hour
+}
+
+func TestClose(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeReader{}
+
+	r := &Reader{
+		r:       f,
+		ch:      make(chan data.Entry),
+		closeCh: make(chan struct{}),
+	}
+
+	err := r.Close(context.Background())
+	if err != nil {
+		t.Errorf("TestClose: unexpected error: %v", err)
+	}
+	if !f.closeCalled {
+		t.Error("TestClose: expected underlying reader.Close to be called")
+	}
+	select {
+	case <-r.ch:
+	default:
+		t.Error("TestClose: expected output channel to be closed")
+	}
+}
+
+func TestSetOut(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeReader{}
+
+	r := &Reader{
+		r: f,
+	}
+
+	out := make(chan data.Entry, 1)
+	err := r.SetOut(context.Background(), out)
+	if err != nil {
+		t.Errorf("TestSetOut: unexpected error: %v", err)
+	}
+	if !f.setOutCalled {
+		t.Error("TestSetOut: expected underlying reader.SetOut to be called")
+	}
+	if r.ch != out {
+		t.Error("TestSetOut: expected output channel to be set")
+	}
 }
 
 func TestRun(t *testing.T) {
 	t.Parallel()
 
-	watchesCalled := []RetrieveType{}
-	var packageEventsCalled chan struct{}
+	handleSwitchCalled := false
+	hs := func() {
+		handleSwitchCalled = true
+	}
+
+	f := &fakeReader{}
+
+	r := &Reader{
+		r:                      f,
+		testHandleClientSwitch: hs,
+	}
+
+	err := r.Run(context.Background())
+	if err != nil {
+		t.Errorf("TestRun: unexpected error: %v", err)
+	}
+	if !handleSwitchCalled {
+		t.Errorf("TestRun: expected handleClientSwitch to be called")
+	}
+}
+
+func TestSwitchWait(t *testing.T) {
+	t.Parallel()
+
+	closed := make(chan struct{})
+	close(closed)
 
 	tests := []struct {
-		name              string
-		started           bool
-		ch                chan data.Entry
-		retrieveTypes     RetrieveType
-		cancelWatcher     bool
-		fakeWatch         func(context.Context, RetrieveType, spanWatcher) error
-		wantPackageEvents bool
-		wantRetrieveTypes []RetrieveType
-		wantErr           bool
+		name    string
+		timer   *time.Timer
+		closeCh chan struct{}
 	}{
 		{
-			name:    "Error: already started",
-			started: true,
-			wantErr: true,
+			name:    "timer expired",
+			timer:   time.NewTimer(1 * time.Millisecond),
+			closeCh: make(chan struct{}),
 		},
 		{
-			name:    "Error: .ch is nil",
-			ch:      nil,
-			wantErr: true,
-		},
-		{
-			name:          "Error: Namespace watch returns error",
-			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTNamespace,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
-				watchesCalled = append(watchesCalled, rt)
-				return errors.New("error")
-			},
-			wantRetrieveTypes: []RetrieveType{RTNamespace},
-			wantPackageEvents: true,
-			wantErr:           true,
-		},
-		{
-			name:          "Error: PersistentVolume watch returns error",
-			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTPersistentVolume,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
-				watchesCalled = append(watchesCalled, rt)
-				return errors.New("error")
-			},
-			wantRetrieveTypes: []RetrieveType{RTPersistentVolume},
-			wantPackageEvents: true,
-			wantErr:           true,
-		},
-		{
-			name:          "Error: Node watch returns error",
-			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTNode,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
-				watchesCalled = append(watchesCalled, rt)
-				return errors.New("error")
-			},
-			wantRetrieveTypes: []RetrieveType{RTNode},
-			wantPackageEvents: true,
-			wantErr:           true,
-		},
-		{
-			name:          "Namespace success",
-			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTNamespace,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
-				watchesCalled = append(watchesCalled, rt)
-				log.Println(watchesCalled)
-				return nil
-			},
-			wantRetrieveTypes: []RetrieveType{RTNamespace},
-			wantPackageEvents: true,
-		},
-		{
-			name:          "PersistentVolume success",
-			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTPersistentVolume,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
-				watchesCalled = append(watchesCalled, rt)
-				return nil
-			},
-			wantRetrieveTypes: []RetrieveType{RTPersistentVolume},
-			wantPackageEvents: true,
-		},
-		{
-			name:          "Node success",
-			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTNode,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
-				watchesCalled = append(watchesCalled, rt)
-				return nil
-			},
-			wantRetrieveTypes: []RetrieveType{RTNode},
-			wantPackageEvents: true,
-		},
-		{
-			name:          "Pod success",
-			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTPod,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
-				watchesCalled = append(watchesCalled, rt)
-				return nil
-			},
-			wantRetrieveTypes: []RetrieveType{RTPod},
-			wantPackageEvents: true,
-		},
-		{
-			name:          "All success",
-			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTNamespace | RTPersistentVolume | RTNode | RTPod,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
-				watchesCalled = append(watchesCalled, rt)
-				return nil
-			},
-			wantRetrieveTypes: []RetrieveType{RTNamespace, RTPersistentVolume, RTNode, RTPod},
-			wantPackageEvents: true,
+			name:    "close channel closed",
+			timer:   time.NewTimer(1 * time.Hour),
+			closeCh: closed,
 		},
 	}
 
 	for _, test := range tests {
-		watchesCalled = nil
-		packageEventsCalled = make(chan struct{})
-
+		switched := false
 		r := &Reader{
-			started:       test.started,
-			ch:            test.ch,
-			retrieveTypes: test.retrieveTypes,
-			fakeWatch:     test.fakeWatch,
-			fakePackageEvents: func(ctx context.Context) {
-				close(packageEventsCalled)
+			closeCh: test.closeCh,
+			testClientSwitchRetry: func() {
+				switched = true
 			},
+			r: &fakeReader{},
 		}
 
-		err := r.Run(context.Background())
-		switch {
-		case test.wantErr && err == nil:
-			t.Errorf("TestRun(%s): got err == nil, want err != nil", test.name)
-			continue
-		case !test.wantErr && err != nil:
-			t.Errorf("TestRun(%s): got err == %v, want err == nil", test.name, err)
-			continue
-		}
+		r.switchWait(test.timer)
 
-		if test.wantPackageEvents {
-			select {
-			case <-packageEventsCalled:
-			case <-time.After(1 * time.Second):
-				t.Errorf("TestRun(%s): packageEvents was not called", test.name)
+		if test.closeCh != closed {
+			if !switched {
+				t.Errorf("TestSwitchWait(%s): expected client switch to be called", test.name)
+			}
+		} else {
+			if switched {
+				t.Errorf("TestSwitchWait(%s): expected client switch to not be called", test.name)
 			}
 		}
-
-		slices.Sort[[]RetrieveType, RetrieveType](watchesCalled)
-		slices.Sort[[]RetrieveType, RetrieveType](test.wantRetrieveTypes)
-		if diff := pretty.Compare(test.wantRetrieveTypes, watchesCalled); diff != "" {
-			t.Errorf("TestRun(%s): retrieveTypes: -want/+got:\n%s", test.name, diff)
-		}
-	}
-
-}
-
-func TestSetupCache(t *testing.T) {
-	t.Parallel()
-
-	r := &Reader{}
-	if err := r.setupCache(context.Background()); err != nil {
-		t.Fatalf("TestSetupCache: got err == %v, want err == nil", err)
-	}
-	defer close(r.cacheIn)
-
-	if r.cache == nil {
-		t.Errorf("TestSetupCache: got cache == nil, want cache != nil")
-	}
-	if r.cacheIn == nil {
-		t.Errorf("TestSetupCache: got cacheIn == nil, want cacheIn != nil")
-	}
-	if r.cacheOut == nil {
-		t.Errorf("TestSetupCache: got cacheOut == nil, want cacheOut != nil")
 	}
 }
 
-func TestPackageEvents(t *testing.T) {
+func TestClientSwitch(t *testing.T) {
 	t.Parallel()
+
+	closed := make(chan struct{})
+	close(closed)
 
 	tests := []struct {
-		name  string
-		ctx   context.Context
-		event watch.Event
-		want  data.Entry
+		name      string
+		closeCh   chan struct{}
+		newReader func() (watchReader, error)
+		wantErr   bool
 	}{
 		{
-			name: "Added event",
-			event: watch.Event{
-				Type:   watch.Added,
-				Object: &corev1.Pod{},
-			},
-			want: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTAdd),
+			name:    "Close() has been called",
+			closeCh: closed,
 		},
 		{
-			name: "Modified event",
-			event: watch.Event{
-				Type:   watch.Modified,
-				Object: &corev1.Pod{},
-			},
-			want: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTUpdate),
-		},
-		{
-			name: "Deleted event",
-			event: watch.Event{
-				Type:   watch.Deleted,
-				Object: &corev1.Pod{},
-			},
-			want: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTDelete),
-		},
-	}
-
-	for _, test := range tests {
-		r := &Reader{
-			cacheOut: make(chan watch.Event, 1),
-			ch:       make(chan data.Entry, 1),
-		}
-		r.cacheOut <- test.event
-		close(r.cacheOut)
-		r.packageEvents(context.Background())
-
-		got := <-r.ch
-		if diff := pretty.Compare(test.want, got); diff != "" {
-			t.Errorf("TestPackageEvents(%s): -want/+got:\n%s", test.name, diff)
-		}
-	}
-}
-
-func TestWatch(t *testing.T) {
-	t.Parallel()
-
-	doneCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	eventWatcherCount := 0
-
-	tests := []struct {
-		name         string
-		ctx          context.Context
-		spanWatcher  func(metav1.ListOptions) (watch.Interface, error)
-		eventWatcher func(ctx context.Context, watcher watch.Interface) (string, error)
-		wantErr      bool
-	}{
-		{
-			name: "Context done",
-			ctx:  doneCtx,
-		},
-		{
-			name: "Watching had connection error and we haven't connected before",
-			ctx:  context.Background(),
-			spanWatcher: func(options metav1.ListOptions) (watch.Interface, error) {
+			name:    "new reader returns error",
+			closeCh: make(chan struct{}),
+			newReader: func() (watchReader, error) {
 				return nil, errors.New("error")
 			},
 			wantErr: true,
 		},
 		{
-			name: "Watching had connection error but we have connected before",
-			ctx:  context.Background(),
-			spanWatcher: func(options metav1.ListOptions) (watch.Interface, error) {
-				return struct{ watch.Interface }{}, nil
+			name:    "reader.Run() returns error",
+			closeCh: make(chan struct{}),
+			newReader: func() (watchReader, error) {
+				return &fakeReader{
+					runErr: errors.New("error"),
+				}, nil
 			},
-			eventWatcher: func(ctx context.Context, watcher watch.Interface) (string, error) {
-				if eventWatcherCount == 0 {
-					eventWatcherCount++
-					return "", errors.New("error")
-				}
-				return "", errors.New("error")
-			},
+			wantErr: true,
 		},
 	}
 
 	for _, test := range tests {
-		log.Printf("TestWatch(%s):", test.name)
-		eventWatcherCount = 0
-
+		oldReader := &fakeReader{}
 		r := &Reader{
-			fakeWatchEvents: test.eventWatcher,
+			closeCh:   test.closeCh,
+			newReader: test.newReader,
+			r:         oldReader,
 		}
 
-		var ctx context.Context
-		if test.ctx.Err() == nil {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithCancel(context.Background())
-			go func() {
-				time.Sleep(100 * time.Millisecond)
-				cancel()
-			}()
-		} else {
-			ctx = test.ctx
-		}
-
-		err := r.watch(ctx, RTNamespace, test.spanWatcher)
+		err := r.clientSwitch(context.Background(), exponential.Record{})
 		switch {
 		case test.wantErr && err == nil:
-			t.Errorf("TestWatch(%s): got err == nil, want err != nil", test.name)
+			t.Errorf("TestClientSwitch(%s): expected error", test.name)
 			continue
 		case !test.wantErr && err != nil:
-			t.Errorf("TestWatch(%s): got err == %v, want err == nil", test.name, err)
+			t.Errorf("TestClientSwitch(%s): unexpected error: %v", test.name, err)
 			continue
 		case err != nil:
 			continue
 		}
-	}
-}
 
-func TestWatchEvent(t *testing.T) {
-	t.Parallel()
-
-	newStopper := func(stopped *bool) func() {
-		return func() {
-			*stopped = true
-		}
-	}
-
-	doneCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	closedIn := make(chan watch.Event)
-	close(closedIn)
-
-	tests := []struct {
-		name        string
-		ctx         context.Context
-		ch          chan watch.Event
-		wantRV      string
-		event       watch.Event
-		wantEvent   watch.Event
-		wantErr     bool
-		wantStopper bool
-	}{
-		{
-			name:        "Context done",
-			ctx:         doneCtx,
-			wantErr:     true,
-			wantStopper: true,
-		},
-		{
-			name:        "Input Channel closed",
-			ctx:         context.Background(),
-			ch:          closedIn,
-			wantErr:     true,
-			wantStopper: true,
-		},
-		{
-			name: "Bookmark event",
-			ctx:  context.Background(),
-			ch:   make(chan watch.Event, 1),
-			event: watch.Event{
-				Type: watch.Bookmark,
-				Object: &fakeObject{
-					rv: "1",
-				},
-			},
-			wantRV: "1",
-		},
-		{
-			name: "Event sent to cache",
-			ctx:  context.Background(),
-			ch:   make(chan watch.Event, 1),
-			event: watch.Event{
-				Type:   watch.Added,
-				Object: &corev1.Pod{},
-			},
-			wantEvent: watch.Event{
-				Type:   watch.Added,
-				Object: &corev1.Pod{},
-			},
-		},
-	}
-
-	for _, test := range tests {
-		r := &Reader{
-			cacheIn: make(chan watch.Event, 1),
-		}
-		if test.event != (watch.Event{}) {
-			test.ch <- test.event
-		}
-
-		stopped := false
-		stopper := newStopper(&stopped)
-
-		gotRv, err := r.watchEvent(test.ctx, test.ch, stopper)
-		switch {
-		case test.wantErr && err == nil:
-			t.Errorf("TestWatchEvent(%s): got err == nil, want err != nil", test.name)
+		// If this is the test for context cancellation, we do not need to check anything.
+		select {
+		case <-test.closeCh:
 			continue
-		case !test.wantErr && err != nil:
-			t.Errorf("TestWatchEvent(%s): got err == %v, want err == nil", test.name, err)
-			continue
+		default:
+		}
 
+		if !oldReader.closeCalled {
+			t.Errorf("TestClientSwitch(%s): expected underlying reader.Close to be called", test.name)
 		}
-		if stopped != test.wantStopper {
-			t.Errorf("TestWatchEvent(%s): got stopped == %v, want stopped == %v", test.name, stopped, test.wantStopper)
-		}
-		if gotRv != test.wantRV {
-			t.Errorf("TestWatchEvent(%s): got rv == %s, want rv == %s", test.name, gotRv, test.wantRV)
-		}
-		if err != nil {
-			continue
-		}
-		if !reflect.ValueOf(test.wantEvent).IsZero() {
-			if diff := pretty.Compare(test.wantEvent, <-r.cacheIn); diff != "" {
-				t.Errorf("TestWatchEvent(%s): -want/+got:\n%s", test.name, diff)
-			}
+
+		if !r.r.(*fakeReader).setOutCalled {
+			t.Errorf("TestClientSwitch(%s): expected underlying reader.SetOut to be called", test.name)
 		}
 	}
-
 }
