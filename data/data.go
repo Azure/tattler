@@ -61,6 +61,10 @@ const (
 	CTUpdate ChangeType = 2 // Update
 	// CTDelete indicates the data was deleted.
 	CTDelete ChangeType = 3 // Delete
+	// CTSnapshot indicates the data is a snapshot. A snapshot is
+	// when we relist the same data object in order to make sure our
+	// data is up to date.
+	CTSnapshot ChangeType = 4 // Snapshot
 )
 
 // ingestObj is a generic type for objects that can be ingested.

@@ -25,7 +25,6 @@ type Reader struct {
 	retrieveTypes RetrieveType
 	filter        *watchlist.Filter
 	filterIn      chan watch.Event
-	filterOut     chan watch.Event
 	filterOpts    []watchlist.Option
 	// relist indicates how often we should relist all the objects in the APIServer.
 	// The default is never. The minimum is 1 hour and the maximum is 7 days.
@@ -39,9 +38,8 @@ type Reader struct {
 	log           *slog.Logger
 
 	// For testing.
-	fakeWatch         func(context.Context, RetrieveType, spanWatcher) error
-	fakeWatchEvents   func(context.Context, watch.Interface) (string, error)
-	fakePackageEvents func(context.Context)
+	fakeWatch       func(context.Context, RetrieveType, spanWatcher) error
+	fakeWatchEvents func(context.Context, watch.Interface) (string, error)
 }
 
 // Option is an option for New(). Unused for now.
@@ -114,6 +112,7 @@ func New(ctx context.Context, clientset *kubernetes.Clientset, retrieveTypes Ret
 			return nil, err
 		}
 	}
+	r.filterOpts = append(r.filterOpts, watchlist.WithLogger(r.log))
 
 	if retrieveTypes&RTNode != RTNode &&
 		retrieveTypes&RTPod != RTPod &&
@@ -178,8 +177,6 @@ func (r *Reader) Run(ctx context.Context) (err error) {
 	if err := r.setupFilter(ctx); err != nil {
 		return fmt.Errorf("error setting up cache: %v", err)
 	}
-
-	go r.packageEvents(ctx)
 
 	ctx, r.cancelWatches = context.WithCancel(context.WithoutCancel(ctx))
 
@@ -266,10 +263,9 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt R
 // setupFilter sets up the filter cache for the Reader.
 func (r *Reader) setupFilter(ctx context.Context) error {
 	r.filterIn = make(chan watch.Event, 1)
-	r.filterOut = make(chan watch.Event, 1)
 
 	var err error
-	r.filter, err = filter.New(ctx, r.filterIn, r.filterOut, r.filterOpts...)
+	r.filter, err = filter.New(ctx, r.filterIn, r.ch, r.filterOpts...)
 	if err != nil {
 		return fmt.Errorf("error creating cache: %v", err)
 	}
@@ -377,33 +373,4 @@ func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper 
 	}
 
 	return "", nil
-}
-
-// packageEvents packages the events into data.Entry objects and sends them to the output channel.
-func (r *Reader) packageEvents(ctx context.Context) {
-	if r.fakePackageEvents != nil {
-		r.fakePackageEvents(ctx)
-		return
-	}
-	for event := range r.filterOut {
-		var e data.Entry
-		var err error
-		switch event.Type {
-		case watch.Added:
-			e, err = data.NewEntry(event.Object, data.STWatchList, data.CTAdd)
-		case watch.Modified:
-			e, err = data.NewEntry(event.Object, data.STWatchList, data.CTUpdate)
-		case watch.Deleted:
-			e, err = data.NewEntry(event.Object, data.STWatchList, data.CTDelete)
-		default:
-			r.log.Warn(fmt.Sprintf("unknown event type: %v", event.Type))
-			continue
-		}
-		if err != nil {
-			r.log.Error(fmt.Sprintf("failed to create entry: %v", err))
-			continue
-		}
-
-		r.ch <- e
-	}
 }
