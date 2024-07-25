@@ -41,7 +41,6 @@ func TestRun(t *testing.T) {
 	t.Parallel()
 
 	watchesCalled := []RetrieveType{}
-	var packageEventsCalled chan struct{}
 
 	tests := []struct {
 		name              string
@@ -50,7 +49,6 @@ func TestRun(t *testing.T) {
 		retrieveTypes     RetrieveType
 		cancelWatcher     bool
 		fakeWatch         func(context.Context, RetrieveType, spanWatcher) error
-		wantPackageEvents bool
 		wantRetrieveTypes []RetrieveType
 		wantErr           bool
 	}{
@@ -73,7 +71,6 @@ func TestRun(t *testing.T) {
 				return errors.New("error")
 			},
 			wantRetrieveTypes: []RetrieveType{RTNamespace},
-			wantPackageEvents: true,
 			wantErr:           true,
 		},
 		{
@@ -85,7 +82,6 @@ func TestRun(t *testing.T) {
 				return errors.New("error")
 			},
 			wantRetrieveTypes: []RetrieveType{RTPersistentVolume},
-			wantPackageEvents: true,
 			wantErr:           true,
 		},
 		{
@@ -97,7 +93,6 @@ func TestRun(t *testing.T) {
 				return errors.New("error")
 			},
 			wantRetrieveTypes: []RetrieveType{RTNode},
-			wantPackageEvents: true,
 			wantErr:           true,
 		},
 		{
@@ -110,7 +105,6 @@ func TestRun(t *testing.T) {
 				return nil
 			},
 			wantRetrieveTypes: []RetrieveType{RTNamespace},
-			wantPackageEvents: true,
 		},
 		{
 			name:          "PersistentVolume success",
@@ -121,7 +115,6 @@ func TestRun(t *testing.T) {
 				return nil
 			},
 			wantRetrieveTypes: []RetrieveType{RTPersistentVolume},
-			wantPackageEvents: true,
 		},
 		{
 			name:          "Node success",
@@ -132,7 +125,6 @@ func TestRun(t *testing.T) {
 				return nil
 			},
 			wantRetrieveTypes: []RetrieveType{RTNode},
-			wantPackageEvents: true,
 		},
 		{
 			name:          "Pod success",
@@ -143,7 +135,6 @@ func TestRun(t *testing.T) {
 				return nil
 			},
 			wantRetrieveTypes: []RetrieveType{RTPod},
-			wantPackageEvents: true,
 		},
 		{
 			name:          "All success",
@@ -154,22 +145,17 @@ func TestRun(t *testing.T) {
 				return nil
 			},
 			wantRetrieveTypes: []RetrieveType{RTNamespace, RTPersistentVolume, RTNode, RTPod},
-			wantPackageEvents: true,
 		},
 	}
 
 	for _, test := range tests {
 		watchesCalled = nil
-		packageEventsCalled = make(chan struct{})
 
 		r := &Reader{
 			started:       test.started,
 			ch:            test.ch,
 			retrieveTypes: test.retrieveTypes,
 			fakeWatch:     test.fakeWatch,
-			fakePackageEvents: func(ctx context.Context) {
-				close(packageEventsCalled)
-			},
 		}
 
 		err := r.Run(context.Background())
@@ -180,14 +166,6 @@ func TestRun(t *testing.T) {
 		case !test.wantErr && err != nil:
 			t.Errorf("TestRun(%s): got err == %v, want err == nil", test.name, err)
 			continue
-		}
-
-		if test.wantPackageEvents {
-			select {
-			case <-packageEventsCalled:
-			case <-time.After(1 * time.Second):
-				t.Errorf("TestRun(%s): packageEvents was not called", test.name)
-			}
 		}
 
 		slices.Sort[[]RetrieveType, RetrieveType](watchesCalled)
@@ -202,7 +180,9 @@ func TestRun(t *testing.T) {
 func TestSetupCache(t *testing.T) {
 	t.Parallel()
 
-	r := &Reader{}
+	r := &Reader{
+		ch: make(chan data.Entry, 1),
+	}
 	if err := r.setupFilter(context.Background()); err != nil {
 		t.Fatalf("TestSetupCache: got err == %v, want err == nil", err)
 	}
@@ -213,60 +193,6 @@ func TestSetupCache(t *testing.T) {
 	}
 	if r.filterIn == nil {
 		t.Errorf("TestSetupCache: got cacheIn == nil, want cacheIn != nil")
-	}
-	if r.filterOut == nil {
-		t.Errorf("TestSetupCache: got cacheOut == nil, want cacheOut != nil")
-	}
-}
-
-func TestPackageEvents(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		ctx   context.Context
-		event watch.Event
-		want  data.Entry
-	}{
-		{
-			name: "Added event",
-			event: watch.Event{
-				Type:   watch.Added,
-				Object: &corev1.Pod{},
-			},
-			want: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTAdd),
-		},
-		{
-			name: "Modified event",
-			event: watch.Event{
-				Type:   watch.Modified,
-				Object: &corev1.Pod{},
-			},
-			want: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTUpdate),
-		},
-		{
-			name: "Deleted event",
-			event: watch.Event{
-				Type:   watch.Deleted,
-				Object: &corev1.Pod{},
-			},
-			want: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTDelete),
-		},
-	}
-
-	for _, test := range tests {
-		r := &Reader{
-			filterOut: make(chan watch.Event, 1),
-			ch:        make(chan data.Entry, 1),
-		}
-		r.filterOut <- test.event
-		close(r.filterOut)
-		r.packageEvents(context.Background())
-
-		got := <-r.ch
-		if diff := pretty.Compare(test.want, got); diff != "" {
-			t.Errorf("TestPackageEvents(%s): -want/+got:\n%s", test.name, diff)
-		}
 	}
 }
 
@@ -314,7 +240,6 @@ func TestWatch(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		log.Printf("TestWatch(%s):", test.name)
 		eventWatcherCount = 0
 
 		r := &Reader{

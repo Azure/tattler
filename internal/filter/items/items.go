@@ -3,12 +3,11 @@
 package items
 
 import (
-	"time"
-
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// Object represent an object that can be filtered.
+// Object represent an object that can be filtered. All K8 objects
+// implement this interface.
 type Object interface {
 	GetUID() types.UID
 	GetResourceVersion() string
@@ -17,25 +16,45 @@ type Object interface {
 
 // Item represents the needed fields to filter an object.
 // Field aligned for storage reduction.
-// Also time is stored as unix nano to reduce storage.
 type Item struct {
 	// ResourceVersion is the resource version of the object.
 	ResourceVersion string
-	// LastUpdate is the last time the item was updated in unix nano.
-	LastUpdate int64
 	// Generation is the generation of the object.
 	Generation int64
 }
 
-// IsNewer returns true if the item is newer than the cacheable object.
-func (i Item) IsNewer(c Object) bool {
+//go:generate stringer -type=Age
+
+// Age represents the state of the item compared to the cacheable object.
+type Age int8
+
+const (
+	// Equal represents the item is equal to the cacheable object.
+	Equal Age = 0
+	// Older represents the item is older than the cacheable object.
+	Older Age = -1
+	// Newer represents the item is newer than the cacheable object.
+	Newer Age = 1
+)
+
+// IsState returns the state of the item compared to the cacheable object.
+// If the item is equal to the cacheable object, it returns Equal.
+// If the item is newer than the cacheable object, it returns Newer.
+// If the item is older than the cacheable object, it returns Older.
+func (i Item) IsState(c Object) Age {
+	// If the resource version is the same, then the item is equal.
 	if i.ResourceVersion == c.GetResourceVersion() {
-		return false
+		return Equal
 	}
-	if i.Generation >= c.GetGeneration() {
-		return true
+	switch {
+	case i.Generation > c.GetGeneration():
+		return Newer
+	case i.Generation < c.GetGeneration():
+		return Older
+	case i.Generation == c.GetGeneration():
+		return Equal
 	}
-	return false
+	panic("unreachable")
 }
 
 // New creates a new Item from a Cacheable object.
@@ -43,7 +62,6 @@ func New(o Object) Item {
 	i := Item{
 		ResourceVersion: o.GetResourceVersion(),
 		Generation:      o.GetGeneration(),
-		LastUpdate:      time.Now().UnixNano(),
 	}
 	return i
 }

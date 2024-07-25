@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Azure/tattler/data"
 	"github.com/google/uuid"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,7 +17,7 @@ func BenchmarkFilterSingle(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		in := make(chan watch.Event, 1)
-		out := make(chan watch.Event, 1)
+		out := make(chan data.Entry, 1)
 		_, err := New(context.Background(), in, out)
 		if err != nil {
 			panic(err)
