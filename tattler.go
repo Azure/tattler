@@ -1,3 +1,13 @@
+/*
+Package tattler provides a way to read date from a source called a Reader that provides K8 objects from
+a K8 object source (such as etcd or API Server watchlist), preprocess the data to add or remove fields,
+and then send the data to a Processor that will process the data in some way (such as sending it to a file, database
+or service).
+
+Reader types can be found in the /reader directory. Processor types are left for the user to implement.
+
+See the README.md for more information on how to use this package.
+*/
 package tattler
 
 import (
@@ -51,6 +61,8 @@ type Runner struct {
 type Option func(*Runner) error
 
 // WithLogger sets the logger. Defaults to slog.Default().
+// You will not need to also use WithBatcherOptions(batching.WithLogger()), as this
+// will automatically set to the same logger.
 func WithLogger(l *slog.Logger) Option {
 	return func(r *Runner) error {
 		if l == nil {
@@ -77,7 +89,9 @@ func WithBatcherOptions(o ...batching.Option) Option {
 	}
 }
 
-// New constructs a new Runner.
+// New constructs a new Runner. The input channel is the ouput of a Reader object. The batchTimespan
+// is the duration to wait before sending a batch of data to the processor. There is also a maximum of
+// 1000 entries that can be sent in a batch. This can be adjust by using WithBatcherOptions(batchingWithBatchSize()).
 func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, options ...Option) (*Runner, error) {
 	if in == nil {
 		return nil, fmt.Errorf("input channel cannot be nil")
