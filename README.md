@@ -20,6 +20,9 @@ Tattler provides a few key features over simply calling the API yourself:
 - Tattler is configured to remove duplicates in non-informer sources at a a much cheaper price point in terms of memory
 - Tattler can be used to filter fields(or change/add to them), filter object types, and filter sources
 - Tattler can be configured to read the information from multiple sources
+- Tattler removes all Pod container environment variables that might contain secrets^*
+
+^* It is possible for secrets to show up in other places, but this is the most common place that leads to security issues.
 
 ## Getting Started
 
