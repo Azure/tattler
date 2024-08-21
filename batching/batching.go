@@ -216,6 +216,8 @@ func (b *Batcher) run() {
 
 		exit, err := b.handleInput(timer.C)
 		if err != nil {
+			// error metric?
+			// metrics.RecordBatchError(context.Background(), data.SourceType(), time.Since(start))
 			b.log.Error(err.Error())
 		}
 		if exit {
@@ -236,6 +238,7 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 			return true, nil
 		}
 		if err := b.handleData(data); err != nil {
+			// error metric? rely on logs + tracing?
 			return false, err
 		}
 
@@ -243,6 +246,7 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 			b.emitter()
 		}
 		// metrics.RecordBatchEmitted(context.Background(), data.SourceType(), time.Since(start))
+		// record batch sizes?
 	case <-tick:
 		// get time since last emit, queue duration
 		// in this case, time since timespan
@@ -260,7 +264,7 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 func (b *Batcher) emit() {
 	batches := b.current
 	for sourceType, batch := range batches {
-		metrics.RecordBatchEmitted(context.Background(), sourceType, time.Since(batch.batchAge))
+		metrics.RecordBatchEmitted(context.Background(), sourceType, len(batch.Data), time.Since(batch.batchAge))
 	}
 	n := getBatches()
 	b.current = n
