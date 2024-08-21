@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
+	metrics "github.com/Azure/tattler/metrics/batching"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -84,10 +85,10 @@ type Batches map[data.SourceType]Batch
 // Recyle recycles the batches. It should not be used after this.
 func (b Batches) Recycle() {
 	for batchesK, batch := range b {
-		for batchK := range batch {
-			delete(batch, batchK)
+		for batchK := range batch.Data {
+			delete(batch.Data, batchK)
 		}
-		putPool(batch)
+		putPool(batch.Data)
 		delete(b, batchesK)
 	}
 	putPool(b)
@@ -99,7 +100,7 @@ func (b Batches) Iter(ctx context.Context) <-chan data.Entry {
 	go func() {
 		defer close(ch)
 		for _, batch := range b {
-			for _, d := range batch {
+			for _, d := range batch.Data {
 				select {
 				case <-ctx.Done():
 					return
@@ -115,19 +116,24 @@ func (b Batches) Iter(ctx context.Context) <-chan data.Entry {
 func (b Batches) Len() int {
 	l := 0
 	for _, batch := range b {
-		l += len(batch)
+		l += len(batch.Data)
 	}
 	return l
 }
 
+type Batch struct {
+	Data
+	batchAge time.Time
+}
+
 // Batch is a map of UIDs to data.
-type Batch map[types.UID]data.Entry
+type Data map[types.UID]data.Entry
 
 func (b *Batch) Map() map[types.UID]data.Entry {
-	if b == nil {
+	if b.Data == nil {
 		return nil
 	}
-	return *b
+	return b.Data
 }
 
 // Batcher is used to ingest data and emit batches.
@@ -220,6 +226,10 @@ func (b *Batcher) run() {
 
 // handleInput handles the input data and batching when the ticker fires.
 func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
+	// actually I need the time that the batch was added, which would need to be a field in Batch
+	// defer go func() {
+	// 	metrics.RecordBatchEmitted(context.Background(), data.SourceType(), time.Since(start))
+	// }()
 	select {
 	case data, ok := <-b.in:
 		if !ok {
@@ -232,7 +242,11 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 		if b.batchSize > 0 && (b.current.Len() >= b.batchSize) {
 			b.emitter()
 		}
+		// metrics.RecordBatchEmitted(context.Background(), data.SourceType(), time.Since(start))
 	case <-tick:
+		// get time since last emit, queue duration
+		// in this case, time since timespan
+		// batch stats metrics?
 		if b.current.Len() == 0 {
 			return false, nil
 		}
@@ -245,6 +259,9 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 // to b.emitter by New() at runtime.
 func (b *Batcher) emit() {
 	batches := b.current
+	for sourceType, batch := range batches {
+		metrics.RecordBatchEmitted(context.Background(), sourceType, time.Since(batch.batchAge))
+	}
 	n := getBatches()
 	b.current = n
 	b.out <- batches
@@ -259,6 +276,7 @@ func (b *Batcher) handleData(entry data.Entry) error {
 	batch, ok := b.current[entry.SourceType()]
 	if !ok {
 		batch = getBatch()
+		batch.batchAge = time.Now()
 	}
 
 	if entry.UID() == "" {
@@ -272,6 +290,9 @@ func (b *Batcher) handleData(entry data.Entry) error {
 	}
 	old, ok := batch.Map()[entry.UID()]
 	if !ok {
+		if batch.Map() == nil {
+			batch.Data = make(map[types.UID]data.Entry)
+		}
 		batch.Map()[entry.UID()] = entry
 		b.current[entry.SourceType()] = batch
 		return nil

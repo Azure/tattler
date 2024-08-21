@@ -11,6 +11,7 @@ import (
 
 	"github.com/Azure/tattler/data"
 	"github.com/Azure/tattler/internal/filter/types/watchlist"
+	metrics "github.com/Azure/tattler/metrics/watchlist"
 	filter "github.com/Azure/tattler/internal/filter/types/watchlist"
 	"github.com/gostdlib/concurrency/prim/wait"
 
@@ -370,6 +371,7 @@ func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper 
 			return "", nil
 		}
 		r.filterIn <- event
+		metrics.RecordWatchEvent(ctx, event, time.Second)
 	}
 
 	return "", nil

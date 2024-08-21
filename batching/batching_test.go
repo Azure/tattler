@@ -5,12 +5,15 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
+	metrics "github.com/Azure/tattler/metrics/batching"
 	"github.com/google/uuid"
 
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"go.opentelemetry.io/otel/exporters/prometheus"
+	"go.opentelemetry.io/otel/sdk/metric"
 )
 
 func TestHandleInput(t *testing.T) {
@@ -23,12 +26,12 @@ func TestHandleInput(t *testing.T) {
 		UID: types.UID("test"),
 	}
 
-	batch99 := Batch{}
+	batch99 := Batch{Data: map[types.UID]data.Entry{}}
 	for i := 0; i < 99; i++ {
 		om := v1.ObjectMeta{
 			UID: types.UID("test"),
 		}
-		batch99[types.UID(uuid.New().String())] = data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd)
+		batch99.Data[types.UID(uuid.New().String())] = data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd)
 	}
 
 	tests := []struct {
@@ -74,7 +77,10 @@ func TestHandleInput(t *testing.T) {
 			in:   func() chan data.Entry { return make(chan data.Entry) },
 			tick: time.After(1 * time.Microsecond),
 			current: Batches{data.STInformer: Batch{
-				types.UID(uuid.New().String()): data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd),
+				Data{
+					types.UID(uuid.New().String()): data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd),
+				},
+				time.Now(),
 			}},
 			wantEmit: true,
 		},
@@ -134,7 +140,10 @@ func TestEmit(t *testing.T) {
 
 	batches := Batches{
 		data.STInformer: Batch{
-			"test": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+			Data{
+				"test": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+			},
+			time.Now(),
 		},
 	}
 
@@ -143,6 +152,14 @@ func TestEmit(t *testing.T) {
 		current: batches,
 	}
 
+
+	exporter, err := prometheus.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := metric.NewMeterProvider(metric.WithReader(exporter))
+	meter := provider.Meter("testmeter")
+	metrics.Init(meter)
 	b.emit()
 
 	select {
@@ -196,7 +213,7 @@ func TestHandleData(t *testing.T) {
 			continue
 		}
 
-		if diff := pretty.Compare(test.data, b.current[test.data.SourceType()][test.data.UID()]); diff != "" {
+		if diff := pretty.Compare(test.data, b.current[test.data.SourceType()].Data[test.data.UID()]); diff != "" {
 			t.Errorf("TestHandleData(%s): -want/+got:\n%s", test.name, diff)
 		}
 	}
@@ -208,8 +225,11 @@ func TestRecycle(t *testing.T) {
 
 	batches := Batches{
 		data.STInformer: Batch{
-			"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
-			"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+			Data{
+				"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+				"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+			},
+			time.Now(),
 		},
 	}
 

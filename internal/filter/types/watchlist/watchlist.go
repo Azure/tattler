@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Azure/tattler/data"
+	metrics "github.com/Azure/tattler/metrics/watchlist"
 	"github.com/Azure/tattler/internal/filter/items"
 	"github.com/gostdlib/concurrency/prim/wait"
 	"k8s.io/apimachinery/pkg/types"
@@ -100,6 +102,7 @@ func (c *Filter) handleEvent(event watch.Event) {
 	}
 
 	if cachedObject || wasSnapshot || wasDeleted {
+		metrics.RecordDataEntry(context.Background(), entry)
 		c.out <- entry
 	}
 }

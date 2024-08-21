@@ -18,20 +18,23 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+
+	"github.com/Azure/tattler/metrics/batching"
+	"github.com/Azure/tattler/metrics/watchlist"
 )
 
-var serviceName = semconv.ServiceNameKey.String("test-service")
+var serviceName = semconv.ServiceNameKey.String("tattler")
 
-func initTelemetry() {
+func InitTelemetry() {
 	log.Printf("Waiting for connection...")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	conn, err := initConn()
-	if err != nil {
-		log.Fatal(err)
-	}
+	// conn, err := initConn()
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
 
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
@@ -43,15 +46,15 @@ func initTelemetry() {
 		log.Fatal(err)
 	}
 
-	shutdownTracerProvider, err := initTracerProvider(ctx, res, conn)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() {
-		if err := shutdownTracerProvider(ctx); err != nil {
-			log.Fatalf("failed to shutdown TracerProvider: %s", err)
-		}
-	}()
+	// shutdownTracerProvider, err := initTracerProvider(ctx, res, conn)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+	// defer func() {
+	// 	if err := shutdownTracerProvider(ctx); err != nil {
+	// 		log.Fatalf("failed to shutdown TracerProvider: %s", err)
+	// 	}
+	// }()
 
 	shutdownMeterProvider, err := initMeterProvider(res)
 	if err != nil {
@@ -66,7 +69,7 @@ func initTelemetry() {
 
 // Initialize a gRPC connection to be used by both the tracer and meter
 // providers.
-func initConn() (*grpc.ClientConn, error) {
+func InitConn() (*grpc.ClientConn, error) {
 	// It connects the OpenTelemetry Collector through local gRPC connection.
 	// You may replace `localhost:4317` with your endpoint.
 	conn, err := grpc.NewClient("localhost:4317",
@@ -81,7 +84,7 @@ func initConn() (*grpc.ClientConn, error) {
 }
 
 // Initializes an OTLP exporter, and configures the corresponding trace provider.
-func initTracerProvider(ctx context.Context, res *resource.Resource, conn *grpc.ClientConn) (func(context.Context) error, error) {
+func InitTracerProvider(ctx context.Context, res *resource.Resource, conn *grpc.ClientConn) (func(context.Context) error, error) {
 	// Set up a trace exporter
 	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
 	if err != nil {
@@ -116,7 +119,16 @@ func initMeterProvider(res *resource.Resource) (func(context.Context) error, err
 		sdkmetric.WithReader(metricExporter),
 		sdkmetric.WithResource(res),
 	)
+	// use global meter provider
 	otel.SetMeterProvider(meterProvider)
+
+	meter := meterProvider.Meter("tattler")
+	if err := batching.Init(meter); err != nil {
+		return nil, err
+	}
+	if err := watchlist.Init(meter); err != nil {
+		return nil, err
+	}
 
 	return meterProvider.Shutdown, nil
 }
