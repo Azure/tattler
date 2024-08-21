@@ -216,8 +216,6 @@ func (b *Batcher) run() {
 
 		exit, err := b.handleInput(timer.C)
 		if err != nil {
-			// error metric?
-			// metrics.RecordBatchError(context.Background(), data.SourceType(), time.Since(start))
 			b.log.Error(err.Error())
 		}
 		if exit {
@@ -228,10 +226,6 @@ func (b *Batcher) run() {
 
 // handleInput handles the input data and batching when the ticker fires.
 func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
-	// actually I need the time that the batch was added, which would need to be a field in Batch
-	// defer go func() {
-	// 	metrics.RecordBatchEmitted(context.Background(), data.SourceType(), time.Since(start))
-	// }()
 	select {
 	case data, ok := <-b.in:
 		if !ok {
@@ -245,12 +239,7 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 		if b.batchSize > 0 && (b.current.Len() >= b.batchSize) {
 			b.emitter()
 		}
-		// metrics.RecordBatchEmitted(context.Background(), data.SourceType(), time.Since(start))
-		// record batch sizes?
 	case <-tick:
-		// get time since last emit, queue duration
-		// in this case, time since timespan
-		// batch stats metrics?
 		if b.current.Len() == 0 {
 			return false, nil
 		}

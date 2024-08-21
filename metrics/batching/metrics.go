@@ -19,10 +19,8 @@ const (
 )
 
 var (
-	batchRequestCount metric.Float64Counter
 	batchesEmittedCount metric.Float64Counter
 	batchItemsEmittedCount metric.Float64Counter
-	currentBatchSize    metric.Float64UpDownCounter
 	batchAgeSeconds     metric.Float64Histogram
 )
 
@@ -33,19 +31,11 @@ func metricName(name string) string {
 // NewRegistry creates a new Registry with initialized prometheus counter definitions
 func Init(meter api.Meter) error {
 	var err error
-	batchRequestCount, err = meter.Float64Counter(metricName("batch_request_total"), api.WithDescription("total number of batch requests by tattler"))
-	if err != nil {
-		return err
-	}
 	batchesEmittedCount, err = meter.Float64Counter(metricName("batches_emitted_total"), api.WithDescription("total number of batches emitted by tattler"))
 	if err != nil {
 		return err
 	}
 	batchItemsEmittedCount, err = meter.Float64Counter(metricName("batch_items_emitted_total"), api.WithDescription("total number of batch items emitted by tattler"))
-	if err != nil {
-		return err
-	}
-	currentBatchSize, err = meter.Float64UpDownCounter(metricName("current_batch_size"), api.WithDescription("current size of batch emitted by tattler"))
 	if err != nil {
 		return err
 	}
@@ -58,22 +48,6 @@ func Init(meter api.Meter) error {
 		// 		4, 5, 6, 8, 10, 15, 20, 30, 45, 60},
 	)
 	return nil
-}
-
-func RecordBatchRequest(ctx context.Context, sourceType data.SourceType, batchItemCount int) {
-	// opt := api.WithAttributes(
-	// 	attribute.Key(sourceTypeLabel).String(sourceType.String()),
-	// )
-	// batch error
-	// current batch size?
-}
-
-func RecordBatchError(ctx context.Context, sourceType data.SourceType, batchItemCount int) {
-	// opt := api.WithAttributes(
-	// 	attribute.Key(sourceTypeLabel).String(sourceType.String()),
-	// )
-	// batch error
-	// current batch size?
 }
 
 // RecordSendEventSuccess increases the eventSentCount metric with success == true
