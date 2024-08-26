@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 
@@ -19,25 +20,22 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/Azure/tattler/metrics/batching"
 	"github.com/Azure/tattler/metrics/watchlist"
 )
 
-var serviceName = semconv.ServiceNameKey.String("tattler")
+var serviceName attribute.KeyValue
 
 // use this as an example instead, services should decide what they want to initialize
-func InitTelemetry(reg prometheus.Registerer) {
-	log.Printf("Waiting for connection...")
+func InitTelemetry(ctx context.Context, logger *slog.Logger, service string, reg prometheus.Registerer) error {
+	logger.Info("Waiting for connection...")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	// conn, err := initConn()
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-
+	serviceName = semconv.ServiceNameKey.String(service)
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
 			// The service name used to display traces in backends
@@ -45,29 +43,24 @@ func InitTelemetry(reg prometheus.Registerer) {
 		),
 	)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("failed to create resource: %w", err)
 	}
 
-	// shutdownTracerProvider, err := initTracerProvider(ctx, res, conn)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// defer func() {
-	// 	if err := shutdownTracerProvider(ctx); err != nil {
-	// 		log.Fatalf("failed to shutdown TracerProvider: %s", err)
-	// 	}
-	// }()
-
-	// shutdownMeterProvider, err := initMeterProvider(res, reg)
-	_, err = InitMeterProvider(res, reg)
+	shutdownMeterProvider, err := InitMeterProvider(res, reg)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("failed to initialize meter provider: %w", err)
 	}
-	// defer func() {
-	// 	if err := shutdownMeterProvider(ctx); err != nil {
-	// 		log.Fatalf("failed to shutdown MeterProvider: %s", err)
-	// 	}
-	// }()
+
+	go func() {
+		<-ctx.Done()
+		log.Printf("Shutting down MeterProvider")
+		if err := shutdownMeterProvider(ctx); err != nil {
+			logger.Error("failed to shutdown MeterProvider: %s", err)
+			return
+		}
+	}()
+
+	return nil
 }
 
 // Initialize a gRPC connection to be used by both the tracer and meter

@@ -1,0 +1,31 @@
+# HELP otel_scope_info Instrumentation Scope metadata
+# TYPE otel_scope_info gauge
+otel_scope_info{otel_scope_name="testmeter",otel_scope_version="v0.1.0"} 1
+# HELP target_info Target metadata
+# TYPE target_info gauge
+target_info{service_name="tattler_test",telemetry_sdk_language="go",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="latest"} 1
+# HELP tattler_batch_age_seconds age of batch when emitted
+# TYPE tattler_batch_age_seconds histogram
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="0.05"} 0
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="0.1"} 0
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="0.2"} 0
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="0.4"} 0
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="0.6"} 0
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="0.8"} 0
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="1"} 1
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="1.25"} 1
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="1.5"} 1
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="2"} 1
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="3"} 1
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="4"} 1
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="5"} 1
+tattler_batch_age_seconds_bucket{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList",le="+Inf"} 1
+tattler_batch_age_seconds_sum{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList"} 1
+tattler_batch_age_seconds_count{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList"} 1
+# HELP tattler_batch_items_emitted_total total number of batch items emitted by tattler
+# TYPE tattler_batch_items_emitted_total counter
+tattler_batch_items_emitted_total{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList"} 3
+# HELP tattler_batches_emitted_total total number of batches emitted by tattler
+# TYPE tattler_batches_emitted_total counter
+tattler_batches_emitted_total{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList"} 1
+
