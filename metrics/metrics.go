@@ -29,10 +29,10 @@ import (
 var serviceName attribute.KeyValue
 
 // use this as an example instead, services should decide what they want to initialize
-func InitTelemetry(ctx context.Context, logger *slog.Logger, service string, reg prometheus.Registerer) error {
+func InitTelemetry(parentCtx context.Context, logger *slog.Logger, service string, reg prometheus.Registerer) error {
 	logger.Info("Waiting for connection...")
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(parentCtx, os.Interrupt)
 	defer cancel()
 
 	serviceName = semconv.ServiceNameKey.String(service)
@@ -52,7 +52,7 @@ func InitTelemetry(ctx context.Context, logger *slog.Logger, service string, reg
 	}
 
 	go func() {
-		<-ctx.Done()
+		<-parentCtx.Done()
 		log.Printf("Shutting down MeterProvider")
 		if err := shutdownMeterProvider(ctx); err != nil {
 			logger.Error("failed to shutdown MeterProvider: %s", err)

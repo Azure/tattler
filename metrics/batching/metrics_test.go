@@ -38,7 +38,9 @@ func TestInitTelemetry(t *testing.T) {
 			expectedFile: "testdata/batching_happy.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
 				Init(meter)
-				RecordBatchEmitted(context.Background(), data.STWatchList, 3, 1 * time.Second)
+				RecordBatchEmitted(ctx, data.STWatchList, 3, 1 * time.Second)
+				RecordBatchEmitted(ctx, data.STWatchList, 1, 4 * time.Second)
+				RecordBatchEmitted(ctx, data.STInformer, 1, 1 * time.Second)
 			},
 		},
 		{
