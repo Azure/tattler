@@ -5,15 +5,12 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
-	metrics "github.com/Azure/tattler/metrics/batching"
 	"github.com/google/uuid"
 
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"go.opentelemetry.io/otel/exporters/prometheus"
-	"go.opentelemetry.io/otel/sdk/metric"
 )
 
 func TestHandleInput(t *testing.T) {
@@ -152,14 +149,6 @@ func TestEmit(t *testing.T) {
 		current: batches,
 	}
 
-
-	exporter, err := prometheus.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider := metric.NewMeterProvider(metric.WithReader(exporter))
-	meter := provider.Meter("testmeter")
-	metrics.Init(meter)
 	b.emit()
 
 	select {

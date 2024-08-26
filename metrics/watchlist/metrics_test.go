@@ -1,4 +1,4 @@
-package batching
+package watchlist
 
 import (
 	"context"
@@ -10,12 +10,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 
+	"k8s.io/apimachinery/pkg/watch"
 	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/Azure/tattler/data"
 )
@@ -24,7 +26,7 @@ var serviceName attribute.KeyValue
 
 // Based on
 // https://github.com/open-telemetry/opentelemetry-go/blob/c609b12d9815bbad0810d67ee0bfcba0591138ce/exporters/prometheus/exporter_test.go
-func TestBatchingMetrics(t *testing.T) {
+func TestWatchListMetrics(t *testing.T) {
 	testCases := []struct {
 		name               string
 		emptyResource      bool
@@ -35,19 +37,33 @@ func TestBatchingMetrics(t *testing.T) {
 	}{
 		{
 			name:         "batching metrics",
-			expectedFile: "testdata/batching_happy.txt",
+			expectedFile: "testdata/watchlist_happy.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
 				Init(meter)
-				RecordBatchEmitted(ctx, data.STWatchList, 3, 1 * time.Second)
-				RecordBatchEmitted(ctx, data.STWatchList, 1, 4 * time.Second)
-				RecordBatchEmitted(ctx, data.STInformer, 1, 1 * time.Second)
+				events := []watch.Event{
+					{
+						Type:   watch.Added,
+					},
+					{
+						Type:   watch.Error,
+					},
+				}
+				for _, event := range events {
+					RecordWatchEvent(ctx, event, 1 * time.Second)
+					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
+					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd))
+					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
+					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
+					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTDelete))
+				}
 			},
 		},
 		{
 			name:         "batching metrics not initialized",
-			expectedFile: "testdata/batching_nometrics.txt",
+			expectedFile: "testdata/watchlist_nometrics.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
-				RecordBatchEmitted(context.Background(), data.STWatchList, 3, 1 * time.Second)
+				RecordWatchEvent(ctx, watch.Event{Type: watch.Added}, 1 * time.Second)
+				RecordDataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
 			},
 		},
 	}
