@@ -12,7 +12,8 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/exporters/prometheus"
+	"github.com/prometheus/client_golang/prometheus"
+	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -25,7 +26,8 @@ import (
 
 var serviceName = semconv.ServiceNameKey.String("tattler")
 
-func InitTelemetry() {
+// use this as an example instead, services should decide what they want to initialize
+func InitTelemetry(reg prometheus.Registerer) {
 	log.Printf("Waiting for connection...")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -56,15 +58,16 @@ func InitTelemetry() {
 	// 	}
 	// }()
 
-	shutdownMeterProvider, err := initMeterProvider(res)
+	// shutdownMeterProvider, err := initMeterProvider(res, reg)
+	_, err = InitMeterProvider(res, reg)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer func() {
-		if err := shutdownMeterProvider(ctx); err != nil {
-			log.Fatalf("failed to shutdown MeterProvider: %s", err)
-		}
-	}()
+	// defer func() {
+	// 	if err := shutdownMeterProvider(ctx); err != nil {
+	// 		log.Fatalf("failed to shutdown MeterProvider: %s", err)
+	// 	}
+	// }()
 }
 
 // Initialize a gRPC connection to be used by both the tracer and meter
@@ -109,8 +112,8 @@ func InitTracerProvider(ctx context.Context, res *resource.Resource, conn *grpc.
 }
 
 // Initializes a Prometheus exporter, and configures the corresponding meter provider.
-func initMeterProvider(res *resource.Resource) (func(context.Context) error, error) {
-	metricExporter, err := prometheus.New()
+func InitMeterProvider(res *resource.Resource, reg prometheus.Registerer) (func(context.Context) error, error) {
+	metricExporter, err := otelprometheus.New(otelprometheus.WithRegisterer(reg))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create metrics exporter: %w", err)
 	}

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/Azure/tattler/data"
 	metrics "github.com/Azure/tattler/metrics/watchlist"

@@ -52,7 +52,9 @@ func RecordWatchEvent(ctx context.Context, e watch.Event, elapsed time.Duration)
 		// added, modified, deleted, bookmark, error
 		attribute.Key(eventTypeLabel).String(string(e.Type)),
 	)
-	watchEventCount.Add(ctx, 1, opt)
+	if watchEventCount != nil {
+		watchEventCount.Add(ctx, 1, opt)
+	}
 }
 
 // RecordDataEntry increases the dataEntryCount metric
@@ -62,5 +64,7 @@ func RecordDataEntry(ctx context.Context, e data.Entry) {
 		attribute.Key(changeTypeLabel).String(e.ChangeType().String()),
 		attribute.Key(objectTypeLabel).String(e.ObjectType().String()),
 	)
-	dataEntryCount.Add(ctx, 1, opt)
+	if dataEntryCount != nil {
+		dataEntryCount.Add(ctx, 1, opt)
+	}
 }
