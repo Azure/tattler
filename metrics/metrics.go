@@ -8,17 +8,12 @@ import (
 	"os"
 	"os/signal"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"github.com/prometheus/client_golang/prometheus"
 	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
-	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	api "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/attribute"
 
@@ -28,7 +23,8 @@ import (
 
 var serviceName attribute.KeyValue
 
-// use this as an example instead, services should decide what they want to initialize
+// InitTelemetry initializes the opentelemetry resources with the given service name and Prometheus registry.
+// This only sets up metrics currently. Tracing can be added later.
 func InitTelemetry(parentCtx context.Context, logger *slog.Logger, service string, reg prometheus.Registerer) error {
 	logger.Info("Waiting for connection...")
 
@@ -63,48 +59,7 @@ func InitTelemetry(parentCtx context.Context, logger *slog.Logger, service strin
 	return nil
 }
 
-// Initialize a gRPC connection to be used by both the tracer and meter
-// providers.
-func InitConn() (*grpc.ClientConn, error) {
-	// It connects the OpenTelemetry Collector through local gRPC connection.
-	// You may replace `localhost:4317` with your endpoint.
-	conn, err := grpc.NewClient("localhost:4317",
-		// Note the use of insecure transport here. TLS is recommended in production.
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gRPC connection to collector: %w", err)
-	}
-
-	return conn, err
-}
-
-// Initializes an OTLP exporter, and configures the corresponding trace provider.
-func InitTracerProvider(ctx context.Context, res *resource.Resource, conn *grpc.ClientConn) (func(context.Context) error, error) {
-	// Set up a trace exporter
-	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
-	}
-
-	// Register the trace exporter with a TracerProvider, using a batch
-	// span processor to aggregate spans before export.
-	bsp := sdktrace.NewBatchSpanProcessor(traceExporter)
-	tracerProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithSampler(sdktrace.AlwaysSample()),
-		sdktrace.WithResource(res),
-		sdktrace.WithSpanProcessor(bsp),
-	)
-	otel.SetTracerProvider(tracerProvider)
-
-	// Set global propagator to tracecontext (the default is no-op).
-	otel.SetTextMapPropagator(propagation.TraceContext{})
-
-	// Shutdown will flush any remaining spans and shut down the exporter.
-	return tracerProvider.Shutdown, nil
-}
-
-// Initializes a Prometheus exporter, and configures the corresponding meter provider.
+// InitMeterProvider initializes a Prometheus exporter, and configures the corresponding meter provider.
 func InitMeterProvider(res *resource.Resource, reg prometheus.Registerer) (func(context.Context) error, error) {
 	metricExporter, err := otelprometheus.New(otelprometheus.WithRegisterer(reg))
 	if err != nil {
@@ -127,4 +82,15 @@ func InitMeterProvider(res *resource.Resource, reg prometheus.Registerer) (func(
 	}
 
 	return meterProvider.Shutdown, nil
+}
+
+// Init initializes all tattler metrics.
+func Init(meter api.Meter) error {
+	if err := batching.Init(meter); err != nil {
+		return err
+	}
+	if err := watchlist.Init(meter); err != nil {
+		return err
+	}
+	return nil
 }

@@ -28,7 +28,7 @@ func metricName(name string) string {
 	return fmt.Sprintf("%s_%s", subsystem, name)
 }
 
-// NewRegistry creates a new Registry with initialized prometheus counter definitions
+// Init initialized the batching metrics.
 func Init(meter api.Meter) error {
 	var err error
 	batchesEmittedCount, err = meter.Float64Counter(metricName("batches_emitted_total"), api.WithDescription("total number of batches emitted by tattler"))
@@ -49,8 +49,8 @@ func Init(meter api.Meter) error {
 	return nil
 }
 
-// RecordSendEventSuccess increases the eventSentCount metric with success == true
-// and records the latency
+// RecordBatchEmitted should be called when emitting a batch to record the batch emitted count, batch item emitted count,
+// and time elapsed from when the batch was created.
 func RecordBatchEmitted(ctx context.Context, sourceType data.SourceType,batchItemCount int, elapsed time.Duration) {
 	opt := api.WithAttributes(
 		attribute.Key(sourceTypeLabel).String(sourceType.String()),
