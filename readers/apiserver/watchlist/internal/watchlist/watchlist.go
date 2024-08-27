@@ -11,7 +11,7 @@ import (
 
 	"github.com/Azure/tattler/data"
 	"github.com/Azure/tattler/internal/filter/types/watchlist"
-	metrics "github.com/Azure/tattler/metrics/watchlist"
+	metrics "github.com/Azure/tattler/metrics/readers"
 	filter "github.com/Azure/tattler/internal/filter/types/watchlist"
 	"github.com/gostdlib/concurrency/prim/wait"
 
@@ -363,6 +363,7 @@ func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper 
 			stopper()
 			return "", io.EOF
 		}
+		metrics.RecordWatchEvent(ctx, event)
 		switch event.Type {
 		case watch.Bookmark:
 			return event.Object.(metav1.Object).GetResourceVersion(), nil
@@ -371,7 +372,6 @@ func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper 
 			return "", nil
 		}
 		r.filterIn <- event
-		metrics.RecordWatchEvent(ctx, event, time.Second)
 	}
 
 	return "", nil

@@ -123,7 +123,7 @@ func (b Batches) Len() int {
 
 type Batch struct {
 	Data
-	batchAge time.Time
+	age time.Time
 }
 
 // Batch is a map of UIDs to data.
@@ -253,7 +253,7 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 func (b *Batcher) emit() {
 	batches := b.current
 	for sourceType, batch := range batches {
-		metrics.RecordBatchEmitted(context.Background(), sourceType, len(batch.Data), time.Since(batch.batchAge))
+		metrics.RecordBatchEmitted(context.Background(), sourceType, len(batch.Data), time.Since(batch.age))
 	}
 	n := getBatches()
 	b.current = n
@@ -269,7 +269,7 @@ func (b *Batcher) handleData(entry data.Entry) error {
 	batch, ok := b.current[entry.SourceType()]
 	if !ok {
 		batch = getBatch()
-		batch.batchAge = time.Now()
+		batch.age = time.Now()
 	}
 
 	if entry.UID() == "" {

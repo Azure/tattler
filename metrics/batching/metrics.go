@@ -19,9 +19,9 @@ const (
 )
 
 var (
-	batchesEmittedCount metric.Float64Counter
+	batchesEmittedCount    metric.Float64Counter
 	batchItemsEmittedCount metric.Float64Counter
-	batchAgeSeconds     metric.Float64Histogram
+	batchAgeSeconds        metric.Float64Histogram
 )
 
 func metricName(name string) string {
@@ -51,7 +51,7 @@ func Init(meter api.Meter) error {
 
 // RecordBatchEmitted should be called when emitting a batch to record the batch emitted count, batch item emitted count,
 // and time elapsed from when the batch was created.
-func RecordBatchEmitted(ctx context.Context, sourceType data.SourceType,batchItemCount int, elapsed time.Duration) {
+func RecordBatchEmitted(ctx context.Context, sourceType data.SourceType, batchItemCount int, elapsed time.Duration) {
 	opt := api.WithAttributes(
 		attribute.Key(sourceTypeLabel).String(sourceType.String()),
 	)

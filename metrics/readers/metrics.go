@@ -1,21 +1,20 @@
-package watchlist
+package readers
 
 import (
-	"time"
-	"fmt"
 	"context"
+	"fmt"
 
 	"github.com/Azure/tattler/data"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	api "go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/apimachinery/pkg/watch"
 )
 
 const (
-	subsystem    = "tattler"
-	successLabel = "success"
-	eventTypeLabel = "event_type"
+	subsystem       = "tattler"
+	successLabel    = "success"
+	eventTypeLabel  = "event_type"
 	sourceTypeLabel = "source_type"
 	changeTypeLabel = "change_type"
 	objectTypeLabel = "object_type"
@@ -23,7 +22,7 @@ const (
 
 var (
 	watchEventCount metric.Float64Counter
-	dataEntryCount metric.Float64Counter
+	dataEntryCount  metric.Float64Counter
 )
 
 func metricName(name string) string {
@@ -47,7 +46,7 @@ func Init(meter api.Meter) error {
 
 // RecordWatchEvent increases the watchEventCount metric
 // with event type = (added, modified, deleted, bookmark, error)
-func RecordWatchEvent(ctx context.Context, e watch.Event, elapsed time.Duration) {
+func RecordWatchEvent(ctx context.Context, e watch.Event) {
 	opt := api.WithAttributes(
 		// added, modified, deleted, bookmark, error
 		attribute.Key(eventTypeLabel).String(string(e.Type)),

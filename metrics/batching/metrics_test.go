@@ -10,8 +10,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 
-	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/attribute"
+	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -19,8 +19,6 @@ import (
 
 	"github.com/Azure/tattler/data"
 )
-
-var serviceName attribute.KeyValue
 
 // Based on
 // https://github.com/open-telemetry/opentelemetry-go/blob/c609b12d9815bbad0810d67ee0bfcba0591138ce/exporters/prometheus/exporter_test.go
@@ -38,16 +36,16 @@ func TestBatchingMetrics(t *testing.T) {
 			expectedFile: "testdata/batching_happy.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
 				Init(meter)
-				RecordBatchEmitted(ctx, data.STWatchList, 3, 1 * time.Second)
-				RecordBatchEmitted(ctx, data.STWatchList, 1, 4 * time.Second)
-				RecordBatchEmitted(ctx, data.STInformer, 1, 1 * time.Second)
+				RecordBatchEmitted(ctx, data.STWatchList, 3, 1*time.Second)
+				RecordBatchEmitted(ctx, data.STWatchList, 1, 4*time.Second)
+				RecordBatchEmitted(ctx, data.STInformer, 1, 1*time.Second)
 			},
 		},
 		{
 			name:         "batching metrics not initialized",
 			expectedFile: "testdata/batching_nometrics.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
-				RecordBatchEmitted(context.Background(), data.STWatchList, 3, 1 * time.Second)
+				RecordBatchEmitted(context.Background(), data.STWatchList, 3, 1*time.Second)
 			},
 		},
 	}
@@ -79,12 +77,6 @@ func TestBatchingMetrics(t *testing.T) {
 			provider := metric.NewMeterProvider(
 				metric.WithResource(res),
 				metric.WithReader(exporter),
-				metric.WithView(metric.NewView(
-					metric.Instrument{Name: "histogram_*"},
-					metric.Stream{Aggregation: metric.AggregationExplicitBucketHistogram{
-						Boundaries: []float64{0, 5, 10, 25, 50, 75, 100, 250, 500, 1000},
-					}},
-				)),
 			)
 			meter := provider.Meter(
 				"testmeter",

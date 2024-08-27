@@ -1,28 +1,25 @@
-package watchlist
+package readers
 
 import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 
-	"k8s.io/apimachinery/pkg/watch"
-	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/attribute"
+	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/watch"
 
 	"github.com/Azure/tattler/data"
 )
-
-var serviceName attribute.KeyValue
 
 // Based on
 // https://github.com/open-telemetry/opentelemetry-go/blob/c609b12d9815bbad0810d67ee0bfcba0591138ce/exporters/prometheus/exporter_test.go
@@ -37,19 +34,19 @@ func TestWatchListMetrics(t *testing.T) {
 	}{
 		{
 			name:         "batching metrics",
-			expectedFile: "testdata/watchlist_happy.txt",
+			expectedFile: "testdata/readers_happy.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
 				Init(meter)
 				events := []watch.Event{
 					{
-						Type:   watch.Added,
+						Type: watch.Added,
 					},
 					{
-						Type:   watch.Error,
+						Type: watch.Error,
 					},
 				}
 				for _, event := range events {
-					RecordWatchEvent(ctx, event, 1 * time.Second)
+					RecordWatchEvent(ctx, event)
 					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
 					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd))
 					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
@@ -60,9 +57,9 @@ func TestWatchListMetrics(t *testing.T) {
 		},
 		{
 			name:         "batching metrics not initialized",
-			expectedFile: "testdata/watchlist_nometrics.txt",
+			expectedFile: "testdata/readers_nometrics.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
-				RecordWatchEvent(ctx, watch.Event{Type: watch.Added}, 1 * time.Second)
+				RecordWatchEvent(ctx, watch.Event{Type: watch.Added})
 				RecordDataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
 			},
 		},
@@ -95,12 +92,6 @@ func TestWatchListMetrics(t *testing.T) {
 			provider := metric.NewMeterProvider(
 				metric.WithResource(res),
 				metric.WithReader(exporter),
-				metric.WithView(metric.NewView(
-					metric.Instrument{Name: "histogram_*"},
-					metric.Stream{Aggregation: metric.AggregationExplicitBucketHistogram{
-						Boundaries: []float64{0, 5, 10, 25, 50, 75, 100, 250, 500, 1000},
-					}},
-				)),
 			)
 			meter := provider.Meter(
 				"testmeter",
