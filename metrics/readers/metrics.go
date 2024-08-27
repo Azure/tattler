@@ -13,7 +13,6 @@ import (
 
 const (
 	subsystem       = "tattler"
-	successLabel    = "success"
 	eventTypeLabel  = "event_type"
 	sourceTypeLabel = "source_type"
 	changeTypeLabel = "change_type"

@@ -14,7 +14,6 @@ import (
 
 const (
 	subsystem       = "tattler"
-	successLabel    = "success"
 	sourceTypeLabel = "source_type"
 )
 
