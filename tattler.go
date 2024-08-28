@@ -55,8 +55,8 @@ type Runner struct {
 	readers       []Reader
 	preProcessors []PreProcessor
 
-	logger *slog.Logger
-	meter  metric.Meter
+	logger        *slog.Logger
+	meterProvider metric.MeterProvider
 
 	mu      sync.Mutex
 	started bool
@@ -94,14 +94,14 @@ func WithBatcherOptions(o ...batching.Option) Option {
 	}
 }
 
-// WithMeter sets the meter with which to register metrics.
+// WithMeterProvider sets the meter provider with which to register metrics.
 // Defaults to nil, in which case metrics won't be registered.
-func WithMeter(m metric.Meter) Option {
+func WithMeterProvider(m metric.MeterProvider) Option {
 	return func(r *Runner) error {
 		if m == nil {
 			return fmt.Errorf("meter cannot be nil")
 		}
-		r.meter = m
+		r.meterProvider = m
 		return nil
 	}
 }
@@ -143,11 +143,12 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 		}
 	}
 
-	if r.meter != nil {
-		if err := batchingmetrics.Init(r.meter); err != nil {
+	if r.meterProvider != nil {
+		meter := r.meterProvider.Meter("tattler")
+		if err := batchingmetrics.Init(meter); err != nil {
 			return nil, err
 		}
-		if err := readersmetrics.Init(r.meter); err != nil {
+		if err := readersmetrics.Init(meter); err != nil {
 			return nil, err
 		}
 	}
