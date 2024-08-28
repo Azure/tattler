@@ -9,8 +9,8 @@ import (
 	"log/slog"
 
 	"github.com/Azure/tattler/data"
-	metrics "github.com/Azure/tattler/metrics/readers"
 	"github.com/Azure/tattler/internal/filter/items"
+	metrics "github.com/Azure/tattler/internal/metrics/readers"
 	"github.com/gostdlib/concurrency/prim/wait"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"

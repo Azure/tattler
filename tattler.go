@@ -23,6 +23,10 @@ import (
 	preprocess "github.com/Azure/tattler/internal/preprocess"
 	"github.com/Azure/tattler/internal/routing"
 	"github.com/Azure/tattler/internal/safety"
+	"go.opentelemetry.io/otel/metric"
+
+	batchingmetrics "github.com/Azure/tattler/internal/metrics/batching"
+	readersmetrics "github.com/Azure/tattler/internal/metrics/readers"
 )
 
 // Reader defines the interface that must be implemented by all readers.
@@ -52,6 +56,7 @@ type Runner struct {
 	preProcessors []PreProcessor
 
 	logger *slog.Logger
+	meter  metric.Meter
 
 	mu      sync.Mutex
 	started bool
@@ -89,6 +94,18 @@ func WithBatcherOptions(o ...batching.Option) Option {
 	}
 }
 
+// WithMeter sets the meter with which to register metrics.
+// Defaults to nil, in which case metrics won't be registered.
+func WithMeter(m metric.Meter) Option {
+	return func(r *Runner) error {
+		if m == nil {
+			return fmt.Errorf("meter cannot be nil")
+		}
+		r.meter = m
+		return nil
+	}
+}
+
 // New constructs a new Runner. The input channel is the ouput of a Reader object. The batchTimespan
 // is the duration to wait before sending a batch of data to the processor. There is also a maximum of
 // 1000 entries that can be sent in a batch. This can be adjust by using WithBatcherOptions(batchingWithBatchSize()).
@@ -122,6 +139,15 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 		secretsIn = make(chan data.Entry, 1)
 		_, err := preprocess.New(ctx, in, secretsIn, r.preProcessors, preprocess.WithLogger(r.logger))
 		if err != nil {
+			return nil, err
+		}
+	}
+
+	if r.meter != nil {
+		if err := batchingmetrics.Init(r.meter); err != nil {
+			return nil, err
+		}
+		if err := readersmetrics.Init(r.meter); err != nil {
 			return nil, err
 		}
 	}

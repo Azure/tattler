@@ -43,7 +43,7 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
-	metrics "github.com/Azure/tattler/metrics/batching"
+	metrics "github.com/Azure/tattler/internal/metrics/batching"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -121,10 +121,10 @@ func (b Batches) Len() int {
 	return l
 }
 
-// Batch stores batch data and metadata. 
+// Batch stores batch data and metadata.
 type Batch struct {
 	Data Data
-	age time.Time
+	age  time.Time
 }
 
 // Data is a map of UIDs to data.

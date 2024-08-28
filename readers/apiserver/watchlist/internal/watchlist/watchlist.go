@@ -11,8 +11,8 @@ import (
 
 	"github.com/Azure/tattler/data"
 	"github.com/Azure/tattler/internal/filter/types/watchlist"
-	metrics "github.com/Azure/tattler/metrics/readers"
 	filter "github.com/Azure/tattler/internal/filter/types/watchlist"
+	metrics "github.com/Azure/tattler/internal/metrics/readers"
 	"github.com/gostdlib/concurrency/prim/wait"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
