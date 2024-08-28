@@ -24,7 +24,9 @@ import (
 // Based on
 // https://github.com/open-telemetry/opentelemetry-go/blob/c609b12d9815bbad0810d67ee0bfcba0591138ce/exporters/prometheus/exporter_test.go
 func TestWatchListMetrics(t *testing.T) {
-	testCases := []struct {
+	t.Parallel()
+
+	tests := []struct {
 		name               string
 		emptyResource      bool
 		customResouceAttrs []attribute.KeyValue
@@ -65,15 +67,15 @@ func TestWatchListMetrics(t *testing.T) {
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			registry := prometheus.NewRegistry()
-			exporter, err := otelprometheus.New(append(tc.options, otelprometheus.WithRegisterer(registry))...)
+			exporter, err := otelprometheus.New(append(test.options, otelprometheus.WithRegisterer(registry))...)
 			require.NoError(t, err)
 
 			var res *resource.Resource
-			if tc.emptyResource {
+			if test.emptyResource {
 				res = resource.Empty()
 			} else {
 				res, err = resource.New(ctx,
@@ -81,7 +83,7 @@ func TestWatchListMetrics(t *testing.T) {
 					resource.WithAttributes(semconv.ServiceName("tattler_test")),
 					// Overwrite the semconv.TelemetrySDKVersionKey value so we don't need to update every version
 					resource.WithAttributes(semconv.TelemetrySDKVersion("latest")),
-					resource.WithAttributes(tc.customResouceAttrs...),
+					resource.WithAttributes(test.customResouceAttrs...),
 				)
 				require.NoError(t, err)
 
@@ -98,9 +100,9 @@ func TestWatchListMetrics(t *testing.T) {
 				otelmetric.WithInstrumentationVersion("v0.1.0"),
 			)
 
-			tc.recordMetrics(ctx, meter)
+			test.recordMetrics(ctx, meter)
 
-			file, err := os.Open(tc.expectedFile)
+			file, err := os.Open(test.expectedFile)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, file.Close()) })
 

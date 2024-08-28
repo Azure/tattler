@@ -20,8 +20,8 @@ const (
 )
 
 var (
-	watchEventCount metric.Float64Counter
-	dataEntryCount  metric.Float64Counter
+	watchEventCount metric.Int64Counter
+	dataEntryCount  metric.Int64Counter
 )
 
 func metricName(name string) string {
@@ -31,11 +31,11 @@ func metricName(name string) string {
 // NewRegistry creates a new Registry with initialized prometheus counter definitions
 func Init(meter api.Meter) error {
 	var err error
-	watchEventCount, err = meter.Float64Counter(metricName("watch_event_total"), api.WithDescription("total number of batches emitted by tattler"))
+	watchEventCount, err = meter.Int64Counter(metricName("watch_event_total"), api.WithDescription("total number of batches emitted by tattler"))
 	if err != nil {
 		return err
 	}
-	dataEntryCount, err = meter.Float64Counter(metricName("data_entry_total"), api.WithDescription("total number of batches emitted by tattler"))
+	dataEntryCount, err = meter.Int64Counter(metricName("data_entry_total"), api.WithDescription("total number of batches emitted by tattler"))
 	if err != nil {
 		return err
 	}

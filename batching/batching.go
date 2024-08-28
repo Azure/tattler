@@ -121,12 +121,13 @@ func (b Batches) Len() int {
 	return l
 }
 
+// Batch stores batch data and metadata. 
 type Batch struct {
-	Data
+	Data Data
 	age time.Time
 }
 
-// Batch is a map of UIDs to data.
+// Data is a map of UIDs to data.
 type Data map[types.UID]data.Entry
 
 func (b *Batch) Map() map[types.UID]data.Entry {

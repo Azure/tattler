@@ -18,8 +18,8 @@ const (
 )
 
 var (
-	batchesEmittedCount    metric.Float64Counter
-	batchItemsEmittedCount metric.Float64Counter
+	batchesEmittedCount    metric.Int64Counter
+	batchItemsEmittedCount metric.Int64Counter
 	batchAgeSeconds        metric.Float64Histogram
 )
 
@@ -30,11 +30,11 @@ func metricName(name string) string {
 // Init initialized the batching metrics.
 func Init(meter api.Meter) error {
 	var err error
-	batchesEmittedCount, err = meter.Float64Counter(metricName("batches_emitted_total"), api.WithDescription("total number of batches emitted by tattler"))
+	batchesEmittedCount, err = meter.Int64Counter(metricName("batches_emitted_total"), api.WithDescription("total number of batches emitted by tattler"))
 	if err != nil {
 		return err
 	}
-	batchItemsEmittedCount, err = meter.Float64Counter(metricName("batch_items_emitted_total"), api.WithDescription("total number of batch items emitted by tattler"))
+	batchItemsEmittedCount, err = meter.Int64Counter(metricName("batch_items_emitted_total"), api.WithDescription("total number of batch items emitted by tattler"))
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func RecordBatchEmitted(ctx context.Context, sourceType data.SourceType, batchIt
 		batchesEmittedCount.Add(ctx, 1, opt)
 	}
 	if batchItemsEmittedCount != nil {
-		batchItemsEmittedCount.Add(ctx, float64(batchItemCount), opt)
+		batchItemsEmittedCount.Add(ctx, int64(batchItemCount), opt)
 	}
 	if batchAgeSeconds != nil {
 		batchAgeSeconds.Record(ctx, elapsed.Seconds(), opt)
