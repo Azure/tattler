@@ -38,6 +38,8 @@ package batching
 import (
 	"context"
 	"errors"
+	"fmt"
+	"iter"
 	"log/slog"
 	"sync"
 	"time"
@@ -95,21 +97,16 @@ func (b Batches) Recycle() {
 }
 
 // Iter returns a channel that iterates over the data. Closing ctx will stop the iteration.
-func (b Batches) Iter(ctx context.Context) <-chan data.Entry {
-	ch := make(chan data.Entry, 1)
-	go func() {
-		defer close(ch)
+func (b Batches) Iter() iter.Seq[data.Entry] {
+	return func(yield func(data.Entry) bool) {
 		for _, batch := range b {
 			for _, d := range batch.Data {
-				select {
-				case <-ctx.Done():
-					return
-				case ch <- d:
+				if !yield(d) {
+					break
 				}
 			}
 		}
-	}()
-	return ch
+	}
 }
 
 // Len returns the length of the batches.
@@ -256,6 +253,7 @@ func (b *Batcher) emit() {
 	for sourceType, batch := range batches {
 		metrics.RecordBatchEmitted(context.Background(), sourceType, len(batch.Data), time.Since(batch.age))
 	}
+
 	n := getBatches()
 	b.current = n
 	b.out <- batches
