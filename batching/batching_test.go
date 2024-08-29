@@ -237,7 +237,7 @@ func TestRecycle(t *testing.T) {
 	}
 }
 
-func TestIter(t *testing.T) {
+func TestAll(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -274,12 +274,12 @@ func TestIter(t *testing.T) {
 
 	for _, test := range tests {
 		entries := []data.Entry{}
-		for d := range test.batches.Iter() {
+		for d := range test.batches.All() {
 			entries = append(entries, d)
 		}
 
 		if diff := pretty.Compare(test.want, entries); diff != "" {
-			t.Errorf("TestIter: .current: -want/+got:\n%s", diff)
+			t.Errorf("TestAll: .current: -want/+got:\n%s", diff)
 		}
 
 	}

@@ -29,7 +29,7 @@ func metricName(name string) string {
 	return fmt.Sprintf("%s_%s", subsystem, name)
 }
 
-// Init initializes the batching metrics.
+// Init initializes the batching metrics. This should only be called by the tattler constructor or tests.
 func Init(meter api.Meter) error {
 	var err error
 	batchingCount, err = meter.Int64Counter(metricName("batching_total"), api.WithDescription("total number of times tattler handles batching input"))

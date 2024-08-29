@@ -90,6 +90,9 @@ func (c *Filter) run(ctx context.Context) {
 
 // handleEvent looks at the event type and acts accordingly.
 func (c *Filter) handleEvent(ctx context.Context, event watch.Event) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// All K8 objects implement items.Object.
 	obj := event.Object.(items.Object)
 
@@ -103,7 +106,9 @@ func (c *Filter) handleEvent(ctx context.Context, event watch.Event) {
 	if cachedObject || wasSnapshot || wasDeleted {
 		metrics.RecordDataEntry(ctx, entry)
 		c.out <- entry
+		return
 	}
+	metrics.RecordStaleData(ctx, entry)
 }
 
 // eventToEntry converts a watch.Event to a data.Entry.

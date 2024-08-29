@@ -54,6 +54,7 @@ func TestWatchListMetrics(t *testing.T) {
 					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
 					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
 					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTDelete))
+					RecordStaleData(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTDelete))
 				}
 			},
 		},
@@ -63,6 +64,7 @@ func TestWatchListMetrics(t *testing.T) {
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
 				RecordWatchEvent(ctx, watch.Event{Type: watch.Added})
 				RecordDataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
+				RecordStaleData(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
 			},
 		},
 	}

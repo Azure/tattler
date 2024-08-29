@@ -95,8 +95,8 @@ func (b Batches) Recycle() {
 	putPool(b)
 }
 
-// Iter returns an iterator over data entries.
-func (b Batches) Iter() iter.Seq[data.Entry] {
+// All returns an iterator over data entries.
+func (b Batches) All() iter.Seq[data.Entry] {
 	return func(yield func(data.Entry) bool) {
 		for _, batch := range b {
 			for _, d := range batch.Data {
@@ -229,6 +229,8 @@ func (b *Batcher) run(ctx context.Context) {
 
 // handleInput handles the input data and batching when the ticker fires.
 func (b *Batcher) handleInput(ctx context.Context, tick <-chan time.Time) (exit bool, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	select {
 	case data, ok := <-b.in:
 		if !ok {
