@@ -162,7 +162,7 @@ func TestEmit(t *testing.T) {
 	}
 
 	if diff := pretty.Compare(b.current, Batches{}); diff != "" {
-		t.Errorf("TestEmit(after emit): .current: -want/+got:\n%s", diff)
+		t.Errorf("TestEmit(after emit): -want/+got:\n%s", diff)
 	}
 }
 
@@ -277,7 +277,7 @@ func TestIter(t *testing.T) {
 		}
 
 		if diff := pretty.Compare(test.want, entries); diff != "" {
-			t.Errorf("TestEmit(after emit): .current: -want/+got:\n%s", diff)
+			t.Errorf("TestIter: .current: -want/+got:\n%s", diff)
 		}
 
 	}

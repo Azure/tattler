@@ -24,6 +24,7 @@ import (
 	"github.com/Azure/tattler/data"
 	reader "github.com/Azure/tattler/readers/apiserver/watchlist/internal/watchlist"
 
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -46,7 +47,8 @@ type Reader struct {
 	// same configuration as the original reader.
 	newReader func() (watchReader, error)
 
-	logger *slog.Logger
+	logger        *slog.Logger
+	meterProvider metric.MeterProvider
 
 	closeCh chan struct{}
 
@@ -72,6 +74,13 @@ func WithFilterSize(size int) Option {
 // different views of the world. The default is never. The minimum is 1 hour and the maximum is 7 days.
 func WithRelist(d time.Duration) Option {
 	return reader.WithRelist(d)
+}
+
+// WithMeterProvider sets the meter provider with which to register metrics.
+// Defaults to nil, in which case metrics won't be registered.
+// You will not need to initialize this if already initialized in tattler Runner.
+func WithMeterProvider(m metric.MeterProvider) Option {
+	return reader.WithMeterProvider(m)
 }
 
 // RetrieveType is the type of data to retrieve. Uses as a bitwise flag.

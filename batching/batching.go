@@ -46,6 +46,7 @@ import (
 	"github.com/Azure/tattler/data"
 	metrics "github.com/Azure/tattler/internal/metrics/batching"
 
+	"go.opentelemetry.io/otel/metric"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -95,7 +96,7 @@ func (b Batches) Recycle() {
 	putPool(b)
 }
 
-// Iter returns a channel that iterates over the data. Closing ctx will stop the iteration.
+// Iter returns an iterator over data entries.
 func (b Batches) Iter() iter.Seq[data.Entry] {
 	return func(yield func(data.Entry) bool) {
 		for _, batch := range b {
@@ -123,14 +124,20 @@ type Batch struct {
 	age  time.Time
 }
 
+// Map returns a map to batch data.
+func (b *Batch) Map() map[types.UID]data.Entry {
+	return b.Data.Map()
+}
+
 // Data is a map of UIDs to data.
 type Data map[types.UID]data.Entry
 
-func (b *Batch) Map() map[types.UID]data.Entry {
-	if b.Data == nil {
+// Map returns a map of UIDs to data entries.
+func (b *Data) Map() map[types.UID]data.Entry {
+	if b == nil {
 		return nil
 	}
-	return b.Data
+	return *b
 }
 
 // Batcher is used to ingest data and emit batches.
@@ -144,7 +151,8 @@ type Batcher struct {
 
 	emitter func()
 
-	log *slog.Logger
+	log           *slog.Logger
+	meterProvider metric.MeterProvider
 }
 
 // Option is a opional argument for New().
@@ -173,6 +181,15 @@ func WithBatchSize(size int) Option {
 	}
 }
 
+// WithMeterProvider sets the meter provider with which to register metrics.
+// Defaults to nil, in which case metrics won't be registered.
+func WithMeterProvider(m metric.MeterProvider) Option {
+	return func(r *Batcher) error {
+		r.meterProvider = m
+		return nil
+	}
+}
+
 // New creates a new Batcher.
 func New(ctx context.Context, in <-chan data.Entry, out chan Batches, timespan time.Duration, options ...Option) (*Batcher, error) {
 	if in == nil || out == nil {
@@ -191,6 +208,13 @@ func New(ctx context.Context, in <-chan data.Entry, out chan Batches, timespan t
 
 	for _, o := range options {
 		if err := o(b); err != nil {
+			return nil, err
+		}
+	}
+
+	if b.meterProvider != nil {
+		meter := b.meterProvider.Meter("tattler")
+		if err := metrics.Init(meter); err != nil {
 			return nil, err
 		}
 	}
