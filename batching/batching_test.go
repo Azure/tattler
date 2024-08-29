@@ -1,6 +1,7 @@
 package batching
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -96,6 +97,7 @@ func TestHandleInput(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		ctx := context.Background()
 		if test.current == nil {
 			test.current = getBatches()
 		}
@@ -105,12 +107,12 @@ func TestHandleInput(t *testing.T) {
 			current:   test.current,
 		}
 		var emitted bool
-		emitter := func() {
+		emitter := func(_ context.Context) {
 			emitted = true
 		}
 		b.emitter = emitter
 
-		gotExit, gotErr := b.handleInput(test.tick)
+		gotExit, gotErr := b.handleInput(ctx, test.tick)
 		switch {
 		case gotErr != nil && !test.wantErr:
 			t.Errorf("TestHandleInput(%s): got err == %v, want err == nil", test.name, gotErr)
@@ -149,7 +151,7 @@ func TestEmit(t *testing.T) {
 		current: batches,
 	}
 
-	b.emit()
+	b.emit(context.Background())
 
 	select {
 	case got := <-b.out:

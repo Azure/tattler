@@ -149,7 +149,7 @@ type Batcher struct {
 	in  <-chan data.Entry
 	out chan Batches
 
-	emitter func()
+	emitter func(context.Context)
 
 	log           *slog.Logger
 	meterProvider metric.MeterProvider
@@ -235,7 +235,7 @@ func (b *Batcher) run(ctx context.Context) {
 	for {
 		timer.Reset(b.timespan)
 
-		exit, err := b.handleInput(timer.C)
+		exit, err := b.handleInput(ctx, timer.C)
 		if err != nil {
 			b.log.Error(err.Error())
 		}
@@ -246,37 +246,37 @@ func (b *Batcher) run(ctx context.Context) {
 }
 
 // handleInput handles the input data and batching when the ticker fires.
-func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
+func (b *Batcher) handleInput(ctx context.Context, tick <-chan time.Time) (exit bool, err error) {
 	select {
 	case data, ok := <-b.in:
 		if !ok {
 			return true, nil
 		}
 		if err := b.handleData(data); err != nil {
-			metrics.RecordBatchingError(context.Background())
+			metrics.RecordBatchingError(ctx)
 			return false, err
 		}
 
 		if b.batchSize > 0 && (b.current.Len() >= b.batchSize) {
-			b.emitter()
+			b.emitter(ctx)
 		}
 	case <-tick:
 		if b.current.Len() == 0 {
-			metrics.RecordBatchingSuccess(context.Background())
+			metrics.RecordBatchingSuccess(ctx)
 			return false, nil
 		}
-		b.emitter()
+		b.emitter(ctx)
 	}
-	metrics.RecordBatchingSuccess(context.Background())
+	metrics.RecordBatchingSuccess(ctx)
 	return false, nil
 }
 
 // emit emits the current batches and preps for the new batches. This is assigned
 // to b.emitter by New() at runtime.
-func (b *Batcher) emit() {
+func (b *Batcher) emit(ctx context.Context) {
 	batches := b.current
 	for sourceType, batch := range batches {
-		metrics.RecordBatchEmitted(context.Background(), sourceType, len(batch.Data), time.Since(batch.age))
+		metrics.RecordBatchEmitted(ctx, sourceType, len(batch.Data), time.Since(batch.age))
 	}
 
 	n := getBatches()
