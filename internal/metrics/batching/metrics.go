@@ -22,7 +22,7 @@ var (
 	batchingCount          metric.Int64Counter
 	batchesEmittedCount    metric.Int64Counter
 	batchItemsEmittedCount metric.Int64Counter
-	batchAgeSeconds        metric.Float64Histogram
+	batchAgeMilliseconds   metric.Int64Histogram
 )
 
 func metricName(name string) string {
@@ -44,10 +44,10 @@ func Init(meter api.Meter) error {
 	if err != nil {
 		return err
 	}
-	batchAgeSeconds, err = meter.Float64Histogram(
-		metricName("batch_age_seconds"),
+	batchAgeMilliseconds, err = meter.Int64Histogram(
+		metricName("batch_age_ms"),
 		api.WithDescription("age of batch when emitted"),
-		api.WithExplicitBucketBoundaries(0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.25, 1.5, 2, 3, 4, 5),
+		api.WithExplicitBucketBoundaries(50, 100, 200, 400, 600, 800, 1000, 1250, 1500, 2000, 3000, 4000, 5000, 10000),
 	)
 
 	return nil
@@ -87,7 +87,7 @@ func RecordBatchEmitted(ctx context.Context, sourceType data.SourceType, batchIt
 	if batchItemsEmittedCount != nil {
 		batchItemsEmittedCount.Add(ctx, int64(batchItemCount), opt)
 	}
-	if batchAgeSeconds != nil {
-		batchAgeSeconds.Record(ctx, elapsed.Seconds(), opt)
+	if batchAgeMilliseconds != nil {
+		batchAgeMilliseconds.Record(ctx, elapsed.Milliseconds(), opt)
 	}
 }
