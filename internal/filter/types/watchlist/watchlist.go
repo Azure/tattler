@@ -69,7 +69,7 @@ func New(ctx context.Context, in chan watch.Event, out chan data.Entry, options 
 	g := wait.Group{}
 
 	g.Go(ctx, func(ctx context.Context) error {
-		cc.run()
+		cc.run(ctx)
 		return nil
 	})
 
@@ -82,14 +82,14 @@ func New(ctx context.Context, in chan watch.Event, out chan data.Entry, options 
 }
 
 // run is the main loop of the Checker.
-func (c *Filter) run() {
+func (c *Filter) run(ctx context.Context) {
 	for event := range c.in {
-		c.handleEvent(event)
+		c.handleEvent(ctx, event)
 	}
 }
 
 // handleEvent looks at the event type and acts accordingly.
-func (c *Filter) handleEvent(event watch.Event) {
+func (c *Filter) handleEvent(ctx context.Context, event watch.Event) {
 	// All K8 objects implement items.Object.
 	obj := event.Object.(items.Object)
 
@@ -101,7 +101,7 @@ func (c *Filter) handleEvent(event watch.Event) {
 	}
 
 	if cachedObject || wasSnapshot || wasDeleted {
-		metrics.RecordDataEntry(context.Background(), entry)
+		metrics.RecordDataEntry(ctx, entry)
 		c.out <- entry
 	}
 }
