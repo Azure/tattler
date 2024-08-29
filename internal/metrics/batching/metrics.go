@@ -15,9 +15,11 @@ import (
 const (
 	subsystem       = "tattler"
 	sourceTypeLabel = "source_type"
+	successLabel    = "success"
 )
 
 var (
+	batchingCount          metric.Int64Counter
 	batchesEmittedCount    metric.Int64Counter
 	batchItemsEmittedCount metric.Int64Counter
 	batchAgeSeconds        metric.Float64Histogram
@@ -27,9 +29,13 @@ func metricName(name string) string {
 	return fmt.Sprintf("%s_%s", subsystem, name)
 }
 
-// Init initialized the batching metrics.
+// Init initializes the batching metrics.
 func Init(meter api.Meter) error {
 	var err error
+	batchingCount, err = meter.Int64Counter(metricName("batching_total"), api.WithDescription("total number of times tattler handles batching input"))
+	if err != nil {
+		return err
+	}
 	batchesEmittedCount, err = meter.Int64Counter(metricName("batches_emitted_total"), api.WithDescription("total number of batches emitted by tattler"))
 	if err != nil {
 		return err
@@ -38,7 +44,6 @@ func Init(meter api.Meter) error {
 	if err != nil {
 		return err
 	}
-	// should this be a histogram or gauge?
 	batchAgeSeconds, err = meter.Float64Histogram(
 		metricName("batch_age_seconds"),
 		api.WithDescription("age of batch when emitted"),
@@ -46,6 +51,27 @@ func Init(meter api.Meter) error {
 	)
 
 	return nil
+}
+
+// RecordBatchingSuccess records successful handling of batch input
+// so we can calculate error rate.
+func RecordBatchingSuccess(ctx context.Context) {
+	opt := api.WithAttributes(
+		attribute.Key(successLabel).String("true"),
+	)
+	if batchingCount != nil {
+		batchingCount.Add(ctx, 1, opt)
+	}
+}
+
+// RecordBatchingError records an error when handling batch input.
+func RecordBatchingError(ctx context.Context) {
+	opt := api.WithAttributes(
+		attribute.Key(successLabel).String("false"),
+	)
+	if batchingCount != nil {
+		batchingCount.Add(ctx, 1, opt)
+	}
 }
 
 // RecordBatchEmitted should be called when emitting a batch to record the batch emitted count, batch item emitted count,

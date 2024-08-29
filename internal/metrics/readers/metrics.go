@@ -28,7 +28,7 @@ func metricName(name string) string {
 	return fmt.Sprintf("%s_%s", subsystem, name)
 }
 
-// NewRegistry creates a new Registry with initialized prometheus counter definitions
+// Init initializes the batching metrics.
 func Init(meter api.Meter) error {
 	var err error
 	watchEventCount, err = meter.Int64Counter(metricName("watch_event_total"), api.WithDescription("total number of batches emitted by tattler"))
@@ -39,12 +39,11 @@ func Init(meter api.Meter) error {
 	if err != nil {
 		return err
 	}
-	// get object age?
 	return nil
 }
 
 // RecordWatchEvent increases the watchEventCount metric
-// with event type = (added, modified, deleted, bookmark, error)
+// with event type = (added, modified, deleted, bookmark, error).
 func RecordWatchEvent(ctx context.Context, e watch.Event) {
 	opt := api.WithAttributes(
 		// added, modified, deleted, bookmark, error
@@ -55,7 +54,7 @@ func RecordWatchEvent(ctx context.Context, e watch.Event) {
 	}
 }
 
-// RecordDataEntry increases the dataEntryCount metric
+// RecordDataEntry increases the dataEntryCount metric.
 func RecordDataEntry(ctx context.Context, e data.Entry) {
 	opt := api.WithAttributes(
 		attribute.Key(sourceTypeLabel).String(e.SourceType().String()),

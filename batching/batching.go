@@ -219,13 +219,13 @@ func New(ctx context.Context, in <-chan data.Entry, out chan Batches, timespan t
 		}
 	}
 
-	go b.run()
+	go b.run(ctx)
 
 	return b, nil
 }
 
 // run runs the Batcher loop.
-func (b *Batcher) run() {
+func (b *Batcher) run(ctx context.Context) {
 	defer close(b.out)
 
 	timer := time.NewTimer(b.timespan)
@@ -253,7 +253,7 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 			return true, nil
 		}
 		if err := b.handleData(data); err != nil {
-			// error metric? rely on logs + tracing?
+			metrics.RecordBatchingError(context.Background())
 			return false, err
 		}
 
@@ -262,10 +262,12 @@ func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
 		}
 	case <-tick:
 		if b.current.Len() == 0 {
+			metrics.RecordBatchingSuccess(context.Background())
 			return false, nil
 		}
 		b.emitter()
 	}
+	metrics.RecordBatchingSuccess(context.Background())
 	return false, nil
 }
 
