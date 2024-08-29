@@ -46,7 +46,6 @@ import (
 	"github.com/Azure/tattler/data"
 	metrics "github.com/Azure/tattler/internal/metrics/batching"
 
-	"go.opentelemetry.io/otel/metric"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -151,8 +150,7 @@ type Batcher struct {
 
 	emitter func(context.Context)
 
-	log           *slog.Logger
-	meterProvider metric.MeterProvider
+	log *slog.Logger
 }
 
 // Option is a opional argument for New().
@@ -181,15 +179,6 @@ func WithBatchSize(size int) Option {
 	}
 }
 
-// WithMeterProvider sets the meter provider with which to register metrics.
-// Defaults to nil, in which case metrics won't be registered.
-func WithMeterProvider(m metric.MeterProvider) Option {
-	return func(r *Batcher) error {
-		r.meterProvider = m
-		return nil
-	}
-}
-
 // New creates a new Batcher.
 func New(ctx context.Context, in <-chan data.Entry, out chan Batches, timespan time.Duration, options ...Option) (*Batcher, error) {
 	if in == nil || out == nil {
@@ -208,13 +197,6 @@ func New(ctx context.Context, in <-chan data.Entry, out chan Batches, timespan t
 
 	for _, o := range options {
 		if err := o(b); err != nil {
-			return nil, err
-		}
-	}
-
-	if b.meterProvider != nil {
-		meter := b.meterProvider.Meter("tattler")
-		if err := metrics.Init(meter); err != nil {
 			return nil, err
 		}
 	}

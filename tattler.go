@@ -96,8 +96,6 @@ func WithBatcherOptions(o ...batching.Option) Option {
 
 // WithMeterProvider sets the meter provider with which to register metrics.
 // Defaults to nil, in which case metrics won't be registered.
-// You will not need to also use WithBatcherOptions(batching.WithMeterProvider()), as this
-// will automatically set to the same meter provider and share a meter.
 func WithMeterProvider(m metric.MeterProvider) Option {
 	return func(r *Runner) error {
 		if m == nil {

@@ -80,19 +80,6 @@ func WithRelist(d time.Duration) Option {
 	}
 }
 
-// WithMeterProvider sets the meter provider with which to register metrics.
-// Defaults to nil, in which case metrics won't be registered.
-// You will not need to initialize this if already initialized in tattler Runner.
-func WithMeterProvider(m metric.MeterProvider) Option {
-	return func(c *Reader) error {
-		if m == nil {
-			return fmt.Errorf("meter cannot be nil")
-		}
-		c.meterProvider = m
-		return nil
-	}
-}
-
 //go:generate stringer -type=RetrieveType -linecomment
 
 // RetrieveType is the type of data to retrieve. Uses as a bitwise flag.
@@ -129,13 +116,6 @@ func New(ctx context.Context, clientset *kubernetes.Clientset, retrieveTypes Ret
 		}
 	}
 	r.filterOpts = append(r.filterOpts, watchlist.WithLogger(r.log))
-
-	if r.meterProvider != nil {
-		meter := r.meterProvider.Meter("tattler")
-		if err := metrics.Init(meter); err != nil {
-			return nil, err
-		}
-	}
 
 	if retrieveTypes&RTNode != RTNode &&
 		retrieveTypes&RTPod != RTPod &&
