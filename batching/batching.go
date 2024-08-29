@@ -38,7 +38,6 @@ package batching
 import (
 	"context"
 	"errors"
-	"fmt"
 	"iter"
 	"log/slog"
 	"sync"

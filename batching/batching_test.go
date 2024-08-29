@@ -235,6 +235,54 @@ func TestRecycle(t *testing.T) {
 	}
 }
 
+func TestIter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		batches Batches
+		want    []data.Entry
+	}{
+		{
+			name: "one entry in one batch",
+			batches: Batches{
+				data.STInformer: Batch{
+					Data{
+						"test": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+					},
+					time.Now(),
+				},
+			},
+			want: []data.Entry{data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd)},
+		},
+		{
+			name: "multiple entries in one batch",
+			batches: Batches{
+				data.STInformer: Batch{
+					Data{
+						"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+						"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate),
+					},
+					time.Now(),
+				},
+			},
+			want: []data.Entry{data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd), data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate)},
+		},
+	}
+
+	for _, test := range tests {
+		entries := []data.Entry{}
+		for d := range test.batches.Iter() {
+			entries = append(entries, d)
+		}
+
+		if diff := pretty.Compare(test.want, entries); diff != "" {
+			t.Errorf("TestEmit(after emit): .current: -want/+got:\n%s", diff)
+		}
+
+	}
+}
+
 func TestGetBatches(t *testing.T) {
 	t.Parallel()
 
