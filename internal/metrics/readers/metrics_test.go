@@ -2,12 +2,12 @@ package readers
 
 import (
 	"context"
+	"log"
 	"os"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/otel/attribute"
 	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
@@ -68,46 +68,59 @@ func TestWatchListMetrics(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			ctx := context.Background()
-			registry := prometheus.NewRegistry()
-			exporter, err := otelprometheus.New(append(test.options, otelprometheus.WithRegisterer(registry))...)
-			require.NoError(t, err)
+		log.Println("test: ", test.name)
+		ctx := context.Background()
+		registry := prometheus.NewRegistry()
+		exporter, err := otelprometheus.New(append(test.options, otelprometheus.WithRegisterer(registry))...)
+		if err != nil {
+			t.Fatalf("failed to create prometheus exporter: %v", err)
+		}
 
-			var res *resource.Resource
-			if test.emptyResource {
-				res = resource.Empty()
-			} else {
-				res, err = resource.New(ctx,
-					// always specify service.name because the default depends on the running OS
-					resource.WithAttributes(semconv.ServiceName("tattler_test")),
-					// Overwrite the semconv.TelemetrySDKVersionKey value so we don't need to update every version
-					resource.WithAttributes(semconv.TelemetrySDKVersion("latest")),
-					resource.WithAttributes(test.customResouceAttrs...),
-				)
-				require.NoError(t, err)
-
-				res, err = resource.Merge(resource.Default(), res)
-				require.NoError(t, err)
+		var res *resource.Resource
+		if test.emptyResource {
+			res = resource.Empty()
+		} else {
+			res, err = resource.New(ctx,
+				// always specify service.name because the default depends on the running OS
+				resource.WithAttributes(semconv.ServiceName("tattler_test")),
+				// Overwrite the semconv.TelemetrySDKVersionKey value so we don't need to update every version
+				resource.WithAttributes(semconv.TelemetrySDKVersion("latest")),
+				resource.WithAttributes(test.customResouceAttrs...),
+			)
+			if err != nil {
+				t.Fatalf("failed to create resource: %v", err)
 			}
 
-			provider := metric.NewMeterProvider(
-				metric.WithResource(res),
-				metric.WithReader(exporter),
-			)
-			meter := provider.Meter(
-				"testmeter",
-				otelmetric.WithInstrumentationVersion("v0.1.0"),
-			)
+			res, err = resource.Merge(resource.Default(), res)
+			if err != nil {
+				t.Fatalf("failed to merge resources: %v", err)
+			}
+		}
 
-			test.recordMetrics(ctx, meter)
+		provider := metric.NewMeterProvider(
+			metric.WithResource(res),
+			metric.WithReader(exporter),
+		)
+		meter := provider.Meter(
+			"testmeter",
+			otelmetric.WithInstrumentationVersion("v0.1.0"),
+		)
 
-			file, err := os.Open(test.expectedFile)
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, file.Close()) })
+		test.recordMetrics(ctx, meter)
 
-			err = testutil.GatherAndCompare(registry, file)
-			require.NoError(t, err)
+		file, err := os.Open(test.expectedFile)
+		if err != nil {
+			t.Fatalf("failed to open file: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := file.Close(); err != nil {
+				t.Fatalf("failed to close file: %v", err)
+			}
 		})
+
+		err = testutil.GatherAndCompare(registry, file)
+		if err != nil {
+			t.Errorf("comparision with metrics file failed: %v", err)
+		}
 	}
 }
