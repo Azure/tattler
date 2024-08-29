@@ -46,4 +46,8 @@ tattler_batch_items_emitted_total{otel_scope_name="testmeter",otel_scope_version
 # TYPE tattler_batches_emitted_total counter
 tattler_batches_emitted_total{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="WatchList"} 2
 tattler_batches_emitted_total{otel_scope_name="testmeter",otel_scope_version="v0.1.0",source_type="Informer"} 1
+# HELP tattler_batching_total total number of times tattler handles batching input
+# TYPE tattler_batching_total counter
+tattler_batching_total{otel_scope_name="testmeter",otel_scope_version="v0.1.0",success="false"} 1
+tattler_batching_total{otel_scope_name="testmeter",otel_scope_version="v0.1.0",success="true"} 3
 
