@@ -10,6 +10,7 @@ import (
 
 	"github.com/Azure/tattler/data"
 	"github.com/Azure/tattler/internal/filter/items"
+	metrics "github.com/Azure/tattler/internal/metrics/readers"
 	"github.com/gostdlib/concurrency/prim/wait"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
@@ -68,7 +69,7 @@ func New(ctx context.Context, in chan watch.Event, out chan data.Entry, options 
 	g := wait.Group{}
 
 	g.Go(ctx, func(ctx context.Context) error {
-		cc.run()
+		cc.run(ctx)
 		return nil
 	})
 
@@ -81,14 +82,14 @@ func New(ctx context.Context, in chan watch.Event, out chan data.Entry, options 
 }
 
 // run is the main loop of the Checker.
-func (c *Filter) run() {
+func (c *Filter) run(ctx context.Context) {
 	for event := range c.in {
-		c.handleEvent(event)
+		c.handleEvent(context.WithoutCancel(ctx), event)
 	}
 }
 
 // handleEvent looks at the event type and acts accordingly.
-func (c *Filter) handleEvent(event watch.Event) {
+func (c *Filter) handleEvent(ctx context.Context, event watch.Event) {
 	// All K8 objects implement items.Object.
 	obj := event.Object.(items.Object)
 
@@ -100,8 +101,11 @@ func (c *Filter) handleEvent(event watch.Event) {
 	}
 
 	if cachedObject || wasSnapshot || wasDeleted {
+		metrics.DataEntry(ctx, entry)
 		c.out <- entry
+		return
 	}
+	metrics.StaleData(ctx, entry)
 }
 
 // eventToEntry converts a watch.Event to a data.Entry.

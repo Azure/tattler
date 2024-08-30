@@ -30,7 +30,7 @@ func TestIsState(t *testing.T) {
 	tests := []struct {
 		name string
 		item Item
-		obj Object
+		obj  Object
 		want Age
 	}{
 		{
@@ -49,7 +49,7 @@ func TestIsState(t *testing.T) {
 			name: "Newer",
 			item: Item{
 				ResourceVersion: "2",
-				Generation: 	1,
+				Generation:      1,
 			},
 			obj: fakeObject{
 				resourceVersion: "1",
@@ -61,7 +61,7 @@ func TestIsState(t *testing.T) {
 			name: "Older",
 			item: Item{
 				ResourceVersion: "1",
-				Generation: 	0,
+				Generation:      0,
 			},
 			obj: fakeObject{
 				resourceVersion: "2",
