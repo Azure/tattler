@@ -1,7 +1,6 @@
 package batching
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -24,12 +23,12 @@ func TestHandleInput(t *testing.T) {
 		UID: types.UID("test"),
 	}
 
-	batch99 := Batch{Data: map[types.UID]data.Entry{}}
+	batch99 := Batch{}
 	for i := 0; i < 99; i++ {
 		om := v1.ObjectMeta{
 			UID: types.UID("test"),
 		}
-		batch99.Data[types.UID(uuid.New().String())] = data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd)
+		batch99[types.UID(uuid.New().String())] = data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd)
 	}
 
 	tests := []struct {
@@ -75,10 +74,7 @@ func TestHandleInput(t *testing.T) {
 			in:   func() chan data.Entry { return make(chan data.Entry) },
 			tick: time.After(1 * time.Microsecond),
 			current: Batches{data.STInformer: Batch{
-				Data{
-					types.UID(uuid.New().String()): data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd),
-				},
-				time.Now(),
+				types.UID(uuid.New().String()): data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd),
 			}},
 			wantEmit: true,
 		},
@@ -97,7 +93,6 @@ func TestHandleInput(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		ctx := context.Background()
 		if test.current == nil {
 			test.current = getBatches()
 		}
@@ -107,12 +102,12 @@ func TestHandleInput(t *testing.T) {
 			current:   test.current,
 		}
 		var emitted bool
-		emitter := func(_ context.Context) {
+		emitter := func() {
 			emitted = true
 		}
 		b.emitter = emitter
 
-		gotExit, gotErr := b.handleInput(ctx, test.tick)
+		gotExit, gotErr := b.handleInput(test.tick)
 		switch {
 		case gotErr != nil && !test.wantErr:
 			t.Errorf("TestHandleInput(%s): got err == %v, want err == nil", test.name, gotErr)
@@ -139,10 +134,7 @@ func TestEmit(t *testing.T) {
 
 	batches := Batches{
 		data.STInformer: Batch{
-			Data{
-				"test": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
-			},
-			time.Now(),
+			"test": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
 		},
 	}
 
@@ -151,7 +143,7 @@ func TestEmit(t *testing.T) {
 		current: batches,
 	}
 
-	b.emit(context.Background())
+	b.emit()
 
 	select {
 	case got := <-b.out:
@@ -164,7 +156,7 @@ func TestEmit(t *testing.T) {
 	}
 
 	if diff := pretty.Compare(b.current, Batches{}); diff != "" {
-		t.Errorf("TestEmit(after emit): -want/+got:\n%s", diff)
+		t.Errorf("TestEmit(after emit): .current: -want/+got:\n%s", diff)
 	}
 }
 
@@ -204,7 +196,7 @@ func TestHandleData(t *testing.T) {
 			continue
 		}
 
-		if diff := pretty.Compare(test.data, b.current[test.data.SourceType()].Data[test.data.UID()]); diff != "" {
+		if diff := pretty.Compare(test.data, b.current[test.data.SourceType()][test.data.UID()]); diff != "" {
 			t.Errorf("TestHandleData(%s): -want/+got:\n%s", test.name, diff)
 		}
 	}
@@ -216,11 +208,8 @@ func TestRecycle(t *testing.T) {
 
 	batches := Batches{
 		data.STInformer: Batch{
-			Data{
-				"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
-				"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
-			},
-			time.Now(),
+			"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+			"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
 		},
 	}
 
@@ -234,54 +223,6 @@ func TestRecycle(t *testing.T) {
 	b := getBatch()
 	if diff := pretty.Compare(Batch{}, b); diff != "" {
 		t.Errorf("TestRecycle: -want/+got:\n%s", diff)
-	}
-}
-
-func TestAll(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		batches Batches
-		want    []data.Entry
-	}{
-		{
-			name: "one entry in one batch",
-			batches: Batches{
-				data.STInformer: Batch{
-					Data{
-						"test": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
-					},
-					time.Now(),
-				},
-			},
-			want: []data.Entry{data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd)},
-		},
-		{
-			name: "multiple entries in one batch",
-			batches: Batches{
-				data.STInformer: Batch{
-					Data{
-						"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
-						"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate),
-					},
-					time.Now(),
-				},
-			},
-			want: []data.Entry{data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd), data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate)},
-		},
-	}
-
-	for _, test := range tests {
-		entries := []data.Entry{}
-		for d := range test.batches.All() {
-			entries = append(entries, d)
-		}
-
-		if diff := pretty.Compare(test.want, entries); diff != "" {
-			t.Errorf("TestAll: .current: -want/+got:\n%s", diff)
-		}
-
 	}
 }
 

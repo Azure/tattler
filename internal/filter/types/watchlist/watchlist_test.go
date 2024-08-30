@@ -103,7 +103,7 @@ func TestHandleEvent(t *testing.T) {
 			out: make(chan data.Entry, 1),
 		}
 
-		f.handleEvent(context.Background(), test.event)
+		f.handleEvent(test.event)
 
 		if test.expectEventForward {
 			select {

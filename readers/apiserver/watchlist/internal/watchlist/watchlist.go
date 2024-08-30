@@ -12,10 +12,8 @@ import (
 	"github.com/Azure/tattler/data"
 	"github.com/Azure/tattler/internal/filter/types/watchlist"
 	filter "github.com/Azure/tattler/internal/filter/types/watchlist"
-	metrics "github.com/Azure/tattler/internal/metrics/readers"
 	"github.com/gostdlib/concurrency/prim/wait"
 
-	"go.opentelemetry.io/otel/metric"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -38,7 +36,6 @@ type Reader struct {
 	cancelWatches context.CancelFunc
 	started       bool
 	log           *slog.Logger
-	meterProvider metric.MeterProvider
 
 	// For testing.
 	fakeWatch       func(context.Context, RetrieveType, spanWatcher) error
@@ -365,7 +362,6 @@ func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper 
 			stopper()
 			return "", io.EOF
 		}
-		metrics.WatchEvent(ctx, event)
 		switch event.Type {
 		case watch.Bookmark:
 			return event.Object.(metav1.Object).GetResourceVersion(), nil
