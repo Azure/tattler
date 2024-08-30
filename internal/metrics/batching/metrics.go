@@ -53,9 +53,9 @@ func Init(meter api.Meter) error {
 	return nil
 }
 
-// RecordBatchingSuccess records successful handling of batch input
+// Success records successful handling of batch input
 // so we can calculate error rate.
-func RecordBatchingSuccess(ctx context.Context) {
+func Success(ctx context.Context) {
 	opt := api.WithAttributes(
 		attribute.Key(successLabel).String("true"),
 	)
@@ -64,8 +64,8 @@ func RecordBatchingSuccess(ctx context.Context) {
 	}
 }
 
-// RecordBatchingError records an error when handling batch input.
-func RecordBatchingError(ctx context.Context) {
+// Error records an error when handling batch input.
+func Error(ctx context.Context) {
 	opt := api.WithAttributes(
 		attribute.Key(successLabel).String("false"),
 	)
@@ -74,9 +74,9 @@ func RecordBatchingError(ctx context.Context) {
 	}
 }
 
-// RecordBatchEmitted should be called when emitting a batch to record the batch emitted count, batch item emitted count,
+// Emitted should be called when emitting a batch to record the batch emitted count, batch item emitted count,
 // and time elapsed from when the batch was created.
-func RecordBatchEmitted(ctx context.Context, sourceType data.SourceType, batchItemCount int, elapsed time.Duration) {
+func Emitted(ctx context.Context, sourceType data.SourceType, batchItemCount int, elapsed time.Duration) {
 	opt := api.WithAttributes(
 		attribute.Key(sourceTypeLabel).String(sourceType.String()),
 	)

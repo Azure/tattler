@@ -38,22 +38,22 @@ func TestBatchingMetrics(t *testing.T) {
 			expectedFile: "testdata/batching_happy.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
 				Init(meter)
-				RecordBatchEmitted(ctx, data.STWatchList, 3, 1*time.Second)
-				RecordBatchingSuccess(ctx)
-				RecordBatchEmitted(ctx, data.STWatchList, 1, 4*time.Second)
-				RecordBatchingSuccess(ctx)
-				RecordBatchEmitted(ctx, data.STInformer, 1, 1*time.Second)
-				RecordBatchingSuccess(ctx)
-				RecordBatchingError(ctx)
+				Emitted(ctx, data.STWatchList, 3, 1*time.Second)
+				Success(ctx)
+				Emitted(ctx, data.STWatchList, 1, 4*time.Second)
+				Success(ctx)
+				Emitted(ctx, data.STInformer, 1, 1*time.Second)
+				Success(ctx)
+				Error(ctx)
 			},
 		},
 		{
 			name:         "batching metrics not initialized",
 			expectedFile: "testdata/batching_nometrics.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
-				RecordBatchEmitted(context.Background(), data.STWatchList, 3, 1*time.Second)
-				RecordBatchingSuccess(ctx)
-				RecordBatchingError(ctx)
+				Emitted(context.Background(), data.STWatchList, 3, 1*time.Second)
+				Success(ctx)
+				Error(ctx)
 			},
 		},
 	}

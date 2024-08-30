@@ -48,13 +48,13 @@ func TestWatchListMetrics(t *testing.T) {
 					},
 				}
 				for _, event := range events {
-					RecordWatchEvent(ctx, event)
-					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
-					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd))
-					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
-					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
-					RecordDataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTDelete))
-					RecordStaleData(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTDelete))
+					WatchEvent(ctx, event)
+					DataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
+					DataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd))
+					DataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
+					DataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
+					DataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTDelete))
+					StaleData(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTDelete))
 				}
 			},
 		},
@@ -62,9 +62,9 @@ func TestWatchListMetrics(t *testing.T) {
 			name:         "batching metrics not initialized",
 			expectedFile: "testdata/readers_nometrics.txt",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
-				RecordWatchEvent(ctx, watch.Event{Type: watch.Added})
-				RecordDataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
-				RecordStaleData(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
+				WatchEvent(ctx, watch.Event{Type: watch.Added})
+				DataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
+				StaleData(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
 			},
 		},
 	}

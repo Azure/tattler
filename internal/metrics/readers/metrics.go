@@ -44,9 +44,9 @@ func Init(meter api.Meter) error {
 	return nil
 }
 
-// RecordWatchEvent increases the watchEventCount metric
+// WatchEvent increases the watchEventCount metric
 // with event type = (added, modified, deleted, bookmark, error).
-func RecordWatchEvent(ctx context.Context, e watch.Event) {
+func WatchEvent(ctx context.Context, e watch.Event) {
 	opt := api.WithAttributes(
 		// added, modified, deleted, bookmark, error
 		attribute.Key(eventTypeLabel).String(string(e.Type)),
@@ -56,8 +56,8 @@ func RecordWatchEvent(ctx context.Context, e watch.Event) {
 	}
 }
 
-// RecordStaleData increases the dataEntryCount metric when the data is stale and dropped by the filter.
-func RecordStaleData(ctx context.Context, e data.Entry) {
+// StaleData increases the dataEntryCount metric when the data is stale and dropped by the filter.
+func StaleData(ctx context.Context, e data.Entry) {
 	opt := api.WithAttributes(
 		attribute.Key(keepLabel).String("false"),
 		attribute.Key(sourceTypeLabel).String(e.SourceType().String()),
@@ -70,8 +70,8 @@ func RecordStaleData(ctx context.Context, e data.Entry) {
 	}
 }
 
-// RecordDataEntry increases the dataEntryCount metric when the data is kept by the filter.
-func RecordDataEntry(ctx context.Context, e data.Entry) {
+// DataEntry increases the dataEntryCount metric when the data is kept by the filter.
+func DataEntry(ctx context.Context, e data.Entry) {
 	opt := api.WithAttributes(
 		attribute.Key(keepLabel).String("true"),
 		attribute.Key(sourceTypeLabel).String(e.SourceType().String()),

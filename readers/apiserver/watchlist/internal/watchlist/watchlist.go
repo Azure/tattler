@@ -365,7 +365,7 @@ func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper 
 			stopper()
 			return "", io.EOF
 		}
-		metrics.RecordWatchEvent(ctx, event)
+		metrics.WatchEvent(ctx, event)
 		switch event.Type {
 		case watch.Bookmark:
 			return event.Object.(metav1.Object).GetResourceVersion(), nil

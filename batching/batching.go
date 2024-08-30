@@ -217,7 +217,7 @@ func (b *Batcher) run(ctx context.Context) {
 	for {
 		timer.Reset(b.timespan)
 
-		exit, err := b.handleInput(ctx, timer.C)
+		exit, err := b.handleInput(context.WithoutCancel(ctx), timer.C)
 		if err != nil {
 			b.log.Error(err.Error())
 		}
@@ -229,15 +229,13 @@ func (b *Batcher) run(ctx context.Context) {
 
 // handleInput handles the input data and batching when the ticker fires.
 func (b *Batcher) handleInput(ctx context.Context, tick <-chan time.Time) (exit bool, err error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	select {
 	case data, ok := <-b.in:
 		if !ok {
 			return true, nil
 		}
 		if err := b.handleData(data); err != nil {
-			metrics.RecordBatchingError(ctx)
+			metrics.Error(ctx)
 			return false, err
 		}
 
@@ -246,12 +244,12 @@ func (b *Batcher) handleInput(ctx context.Context, tick <-chan time.Time) (exit 
 		}
 	case <-tick:
 		if b.current.Len() == 0 {
-			metrics.RecordBatchingSuccess(ctx)
+			metrics.Success(ctx)
 			return false, nil
 		}
 		b.emitter(ctx)
 	}
-	metrics.RecordBatchingSuccess(ctx)
+	metrics.Success(ctx)
 	return false, nil
 }
 
@@ -260,7 +258,7 @@ func (b *Batcher) handleInput(ctx context.Context, tick <-chan time.Time) (exit 
 func (b *Batcher) emit(ctx context.Context) {
 	batches := b.current
 	for sourceType, batch := range batches {
-		metrics.RecordBatchEmitted(ctx, sourceType, len(batch.Data), time.Since(batch.age))
+		metrics.Emitted(ctx, sourceType, len(batch.Data), time.Since(batch.age))
 	}
 
 	n := getBatches()
