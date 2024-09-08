@@ -38,11 +38,13 @@ package batching
 import (
 	"context"
 	"errors"
+	"iter"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/Azure/tattler/data"
+	metrics "github.com/Azure/tattler/internal/metrics/batching"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -84,46 +86,53 @@ type Batches map[data.SourceType]Batch
 // Recyle recycles the batches. It should not be used after this.
 func (b Batches) Recycle() {
 	for batchesK, batch := range b {
-		for batchK := range batch {
-			delete(batch, batchK)
+		for batchK := range batch.Data {
+			delete(batch.Data, batchK)
 		}
-		putPool(batch)
+		putPool(batch.Data)
 		delete(b, batchesK)
 	}
 	putPool(b)
 }
 
-// Iter returns a channel that iterates over the data. Closing ctx will stop the iteration.
-func (b Batches) Iter(ctx context.Context) <-chan data.Entry {
-	ch := make(chan data.Entry, 1)
-	go func() {
-		defer close(ch)
+// All returns an iterator over data entries.
+func (b Batches) All() iter.Seq[data.Entry] {
+	return func(yield func(data.Entry) bool) {
 		for _, batch := range b {
-			for _, d := range batch {
-				select {
-				case <-ctx.Done():
-					return
-				case ch <- d:
+			for _, d := range batch.Data {
+				if !yield(d) {
+					break
 				}
 			}
 		}
-	}()
-	return ch
+	}
 }
 
 // Len returns the length of the batches.
 func (b Batches) Len() int {
 	l := 0
 	for _, batch := range b {
-		l += len(batch)
+		l += len(batch.Data)
 	}
 	return l
 }
 
-// Batch is a map of UIDs to data.
-type Batch map[types.UID]data.Entry
+// Batch stores batch data and metadata.
+type Batch struct {
+	Data Data
+	age  time.Time
+}
 
+// Map returns a map to batch data.
 func (b *Batch) Map() map[types.UID]data.Entry {
+	return b.Data.Map()
+}
+
+// Data is a map of UIDs to data.
+type Data map[types.UID]data.Entry
+
+// Map returns a map of UIDs to data entries.
+func (b *Data) Map() map[types.UID]data.Entry {
 	if b == nil {
 		return nil
 	}
@@ -139,7 +148,7 @@ type Batcher struct {
 	in  <-chan data.Entry
 	out chan Batches
 
-	emitter func()
+	emitter func(context.Context)
 
 	log *slog.Logger
 }
@@ -192,13 +201,13 @@ func New(ctx context.Context, in <-chan data.Entry, out chan Batches, timespan t
 		}
 	}
 
-	go b.run()
+	go b.run(ctx)
 
 	return b, nil
 }
 
 // run runs the Batcher loop.
-func (b *Batcher) run() {
+func (b *Batcher) run(ctx context.Context) {
 	defer close(b.out)
 
 	timer := time.NewTimer(b.timespan)
@@ -208,7 +217,7 @@ func (b *Batcher) run() {
 	for {
 		timer.Reset(b.timespan)
 
-		exit, err := b.handleInput(timer.C)
+		exit, err := b.handleInput(context.WithoutCancel(ctx), timer.C)
 		if err != nil {
 			b.log.Error(err.Error())
 		}
@@ -219,32 +228,39 @@ func (b *Batcher) run() {
 }
 
 // handleInput handles the input data and batching when the ticker fires.
-func (b *Batcher) handleInput(tick <-chan time.Time) (exit bool, err error) {
+func (b *Batcher) handleInput(ctx context.Context, tick <-chan time.Time) (exit bool, err error) {
 	select {
 	case data, ok := <-b.in:
 		if !ok {
 			return true, nil
 		}
 		if err := b.handleData(data); err != nil {
+			metrics.Error(ctx)
 			return false, err
 		}
 
 		if b.batchSize > 0 && (b.current.Len() >= b.batchSize) {
-			b.emitter()
+			b.emitter(ctx)
 		}
 	case <-tick:
 		if b.current.Len() == 0 {
+			metrics.Success(ctx)
 			return false, nil
 		}
-		b.emitter()
+		b.emitter(ctx)
 	}
+	metrics.Success(ctx)
 	return false, nil
 }
 
 // emit emits the current batches and preps for the new batches. This is assigned
 // to b.emitter by New() at runtime.
-func (b *Batcher) emit() {
+func (b *Batcher) emit(ctx context.Context) {
 	batches := b.current
+	for sourceType, batch := range batches {
+		metrics.Emitted(ctx, sourceType, len(batch.Data), time.Since(batch.age))
+	}
+
 	n := getBatches()
 	b.current = n
 	b.out <- batches
@@ -259,6 +275,7 @@ func (b *Batcher) handleData(entry data.Entry) error {
 	batch, ok := b.current[entry.SourceType()]
 	if !ok {
 		batch = getBatch()
+		batch.age = time.Now()
 	}
 
 	if entry.UID() == "" {
@@ -272,6 +289,9 @@ func (b *Batcher) handleData(entry data.Entry) error {
 	}
 	old, ok := batch.Map()[entry.UID()]
 	if !ok {
+		if batch.Map() == nil {
+			batch.Data = make(map[types.UID]data.Entry)
+		}
 		batch.Map()[entry.UID()] = entry
 		b.current[entry.SourceType()] = batch
 		return nil

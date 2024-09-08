@@ -1,3 +1,13 @@
+/*
+Package tattler provides a way to read date from a source called a Reader that provides K8 objects from
+a K8 object source (such as etcd or API Server watchlist), preprocess the data to add or remove fields,
+and then send the data to a Processor that will process the data in some way (such as sending it to a file, database
+or service).
+
+Reader types can be found in the /reader directory. Processor types are left for the user to implement.
+
+See the README.md for more information on how to use this package.
+*/
 package tattler
 
 import (
@@ -13,6 +23,10 @@ import (
 	preprocess "github.com/Azure/tattler/internal/preprocess"
 	"github.com/Azure/tattler/internal/routing"
 	"github.com/Azure/tattler/internal/safety"
+	"go.opentelemetry.io/otel/metric"
+
+	batchingmetrics "github.com/Azure/tattler/internal/metrics/batching"
+	readersmetrics "github.com/Azure/tattler/internal/metrics/readers"
 )
 
 // Reader defines the interface that must be implemented by all readers.
@@ -41,7 +55,8 @@ type Runner struct {
 	readers       []Reader
 	preProcessors []PreProcessor
 
-	logger *slog.Logger
+	logger        *slog.Logger
+	meterProvider metric.MeterProvider
 
 	mu      sync.Mutex
 	started bool
@@ -51,6 +66,8 @@ type Runner struct {
 type Option func(*Runner) error
 
 // WithLogger sets the logger. Defaults to slog.Default().
+// You will not need to also use WithBatcherOptions(batching.WithLogger()), as this
+// will automatically set to the same logger.
 func WithLogger(l *slog.Logger) Option {
 	return func(r *Runner) error {
 		if l == nil {
@@ -77,7 +94,21 @@ func WithBatcherOptions(o ...batching.Option) Option {
 	}
 }
 
-// New constructs a new Runner.
+// WithMeterProvider sets the meter provider with which to register metrics.
+// Defaults to nil, in which case metrics won't be registered.
+func WithMeterProvider(m metric.MeterProvider) Option {
+	return func(r *Runner) error {
+		if m == nil {
+			return fmt.Errorf("meter cannot be nil")
+		}
+		r.meterProvider = m
+		return nil
+	}
+}
+
+// New constructs a new Runner. The input channel is the ouput of a Reader object. The batchTimespan
+// is the duration to wait before sending a batch of data to the processor. There is also a maximum of
+// 1000 entries that can be sent in a batch. This can be adjust by using WithBatcherOptions(batchingWithBatchSize()).
 func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, options ...Option) (*Runner, error) {
 	if in == nil {
 		return nil, fmt.Errorf("input channel cannot be nil")
@@ -108,6 +139,16 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 		secretsIn = make(chan data.Entry, 1)
 		_, err := preprocess.New(ctx, in, secretsIn, r.preProcessors, preprocess.WithLogger(r.logger))
 		if err != nil {
+			return nil, err
+		}
+	}
+
+	if r.meterProvider != nil {
+		meter := r.meterProvider.Meter("tattler")
+		if err := batchingmetrics.Init(meter); err != nil {
+			return nil, err
+		}
+		if err := readersmetrics.Init(meter); err != nil {
 			return nil, err
 		}
 	}
