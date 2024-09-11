@@ -69,7 +69,6 @@ func TestHandleInput(t *testing.T) {
 			in:   func() chan data.Entry { return make(chan data.Entry) },
 			tick: time.After(1 * time.Microsecond),
 		},
-
 		{
 			name: "Successful tick and data to send",
 			in:   func() chan data.Entry { return make(chan data.Entry) },
@@ -184,6 +183,10 @@ func TestHandleData(t *testing.T) {
 		{
 			name: "Valid data",
 			data: data.MustNewEntry(&corev1.Pod{ObjectMeta: v1.ObjectMeta{UID: types.UID("test")}}, data.STInformer, data.CTAdd),
+		},
+		{
+			name: "Valid delete data",
+			data: data.MustNewEntry(&corev1.Pod{ObjectMeta: v1.ObjectMeta{UID: types.UID("test")}}, data.STInformer, data.CTDelete),
 		},
 	}
 
