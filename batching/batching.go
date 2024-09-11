@@ -275,7 +275,7 @@ func (b *Batcher) handleData(entry data.Entry) error {
 	batch, ok := b.current[entry.SourceType()]
 	if !ok {
 		batch = getBatch()
-		batch.Data = make(map[types.UID]data.Entry)
+		batch.Data = map[types.UID]data.Entry{}
 		batch.age = time.Now()
 	}
 
