@@ -185,7 +185,7 @@ func TestHandleData(t *testing.T) {
 			data: data.MustNewEntry(&corev1.Pod{ObjectMeta: v1.ObjectMeta{UID: types.UID("test")}}, data.STInformer, data.CTAdd),
 		},
 		{
-			name: "Valid delete data",
+			name: "Valid delete event data",
 			data: data.MustNewEntry(&corev1.Pod{ObjectMeta: v1.ObjectMeta{UID: types.UID("test")}}, data.STInformer, data.CTDelete),
 		},
 	}
