@@ -12,11 +12,12 @@ func _() {
 	_ = x[CTAdd-1]
 	_ = x[CTUpdate-2]
 	_ = x[CTDelete-3]
+	_ = x[CTSnapshot-4]
 }
 
-const _ChangeType_name = "UnknownAddUpdateDelete"
+const _ChangeType_name = "UnknownAddUpdateDeleteSnapshot"
 
-var _ChangeType_index = [...]uint8{0, 7, 10, 16, 22}
+var _ChangeType_index = [...]uint8{0, 7, 10, 16, 22, 30}
 
 func (i ChangeType) String() string {
 	if i >= ChangeType(len(_ChangeType_index)-1) {
