@@ -130,28 +130,6 @@ func (c *Filter) eventToEntry(event watch.Event, wasSnapShot bool) (data.Entry, 
 	return e, err
 }
 
-// eventToEntry converts a watch.Event to a data.Entry.
-func (c *Filter) eventToEntry(event watch.Event, wasSnapShot bool) (data.Entry, error) {
-	var e data.Entry
-	var err error
-
-	if wasSnapShot {
-		e, err = data.NewEntry(event.Object, data.STWatchList, data.CTSnapshot)
-	} else {
-		switch event.Type {
-		case watch.Added:
-			e, err = data.NewEntry(event.Object, data.STWatchList, data.CTAdd)
-		case watch.Modified:
-			e, err = data.NewEntry(event.Object, data.STWatchList, data.CTUpdate)
-		case watch.Deleted:
-			e, err = data.NewEntry(event.Object, data.STWatchList, data.CTDelete)
-		default:
-			err = fmt.Errorf("unknown event type: %v", event.Type)
-		}
-	}
-	return e, err
-}
-
 // setMapItem sets the item in the map if it doesn't exist or if the new pod is newer.
 // cached is set to true if we cached the item. If the item was already in the cache but
 // had the same value, isSnapshot is true. If the item is indicating a deletion, isDeleted is true

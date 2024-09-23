@@ -12,12 +12,14 @@ func _() {
 	_ = x[RTPod-2]
 	_ = x[RTNamespace-4]
 	_ = x[RTPersistentVolume-8]
+	_ = x[RTRBAC-16]
 }
 
 const (
 	_RetrieveType_name_0 = "NodePod"
 	_RetrieveType_name_1 = "Namespace"
 	_RetrieveType_name_2 = "PersistentVolume"
+	_RetrieveType_name_3 = "RBAC"
 )
 
 var (
@@ -33,6 +35,8 @@ func (i RetrieveType) String() string {
 		return _RetrieveType_name_1
 	case i == 8:
 		return _RetrieveType_name_2
+	case i == 16:
+		return _RetrieveType_name_3
 	default:
 		return "RetrieveType(" + strconv.FormatInt(int64(i), 10) + ")"
 	}

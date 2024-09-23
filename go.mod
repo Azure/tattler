@@ -6,7 +6,6 @@ require (
 	github.com/Azure/retry v0.0.0-20240325164105-70e16f388626
 	github.com/gostdlib/concurrency v0.0.0-20240403195145-a5b82e576be2
 	github.com/prometheus/client_golang v1.19.1
-	github.com/stretchr/testify v1.9.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.50.0
 	go.opentelemetry.io/otel/metric v1.28.0
 	go.opentelemetry.io/otel/sdk v1.28.0
@@ -21,7 +20,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/jedib0t/go-pretty/v6 v6.5.6 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect

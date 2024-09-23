@@ -48,7 +48,7 @@ func TestRun(t *testing.T) {
 		ch                chan data.Entry
 		retrieveTypes     RetrieveType
 		cancelWatcher     bool
-		fakeWatch         func(context.Context, RetrieveType, spanWatcher) error
+		fakeWatch         func(context.Context, RetrieveType, []spawnWatcher) error
 		wantRetrieveTypes []RetrieveType
 		wantErr           bool
 	}{
@@ -66,7 +66,7 @@ func TestRun(t *testing.T) {
 			name:          "Error: Namespace watch returns error",
 			ch:            make(chan data.Entry, 1),
 			retrieveTypes: RTNamespace,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return errors.New("error")
 			},
@@ -77,7 +77,7 @@ func TestRun(t *testing.T) {
 			name:          "Error: PersistentVolume watch returns error",
 			ch:            make(chan data.Entry, 1),
 			retrieveTypes: RTPersistentVolume,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return errors.New("error")
 			},
@@ -88,7 +88,7 @@ func TestRun(t *testing.T) {
 			name:          "Error: Node watch returns error",
 			ch:            make(chan data.Entry, 1),
 			retrieveTypes: RTNode,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return errors.New("error")
 			},
@@ -99,7 +99,7 @@ func TestRun(t *testing.T) {
 			name:          "Namespace success",
 			ch:            make(chan data.Entry, 1),
 			retrieveTypes: RTNamespace,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				log.Println(watchesCalled)
 				return nil
@@ -110,7 +110,7 @@ func TestRun(t *testing.T) {
 			name:          "PersistentVolume success",
 			ch:            make(chan data.Entry, 1),
 			retrieveTypes: RTPersistentVolume,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -120,7 +120,7 @@ func TestRun(t *testing.T) {
 			name:          "Node success",
 			ch:            make(chan data.Entry, 1),
 			retrieveTypes: RTNode,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -130,17 +130,27 @@ func TestRun(t *testing.T) {
 			name:          "Pod success",
 			ch:            make(chan data.Entry, 1),
 			retrieveTypes: RTPod,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
 			wantRetrieveTypes: []RetrieveType{RTPod},
 		},
 		{
+			name:          "RBAC success",
+			ch:            make(chan data.Entry, 1),
+			retrieveTypes: RTRBAC,
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
+				watchesCalled = append(watchesCalled, rt)
+				return nil
+			},
+			wantRetrieveTypes: []RetrieveType{RTRBAC},
+		},
+		{
 			name:          "All success",
 			ch:            make(chan data.Entry, 1),
 			retrieveTypes: RTNamespace | RTPersistentVolume | RTNode | RTPod,
-			fakeWatch: func(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -205,11 +215,11 @@ func TestWatch(t *testing.T) {
 	eventWatcherCount := 0
 
 	tests := []struct {
-		name         string
-		ctx          context.Context
-		spanWatcher  func(metav1.ListOptions) (watch.Interface, error)
-		eventWatcher func(ctx context.Context, watcher watch.Interface) (string, error)
-		wantErr      bool
+		name          string
+		ctx           context.Context
+		spawnWatchers []spawnWatcher
+		eventWatcher  func(ctx context.Context, watcher watch.Interface) (string, error)
+		wantErr       bool
 	}{
 		{
 			name: "Context done",
@@ -218,16 +228,20 @@ func TestWatch(t *testing.T) {
 		{
 			name: "Watching had connection error and we haven't connected before",
 			ctx:  context.Background(),
-			spanWatcher: func(options metav1.ListOptions) (watch.Interface, error) {
-				return nil, errors.New("error")
+			spawnWatchers: []spawnWatcher{
+				func(options metav1.ListOptions) (watch.Interface, error) {
+					return nil, errors.New("error")
+				},
 			},
 			wantErr: true,
 		},
 		{
 			name: "Watching had connection error but we have connected before",
 			ctx:  context.Background(),
-			spanWatcher: func(options metav1.ListOptions) (watch.Interface, error) {
-				return struct{ watch.Interface }{}, nil
+			spawnWatchers: []spawnWatcher{
+				func(options metav1.ListOptions) (watch.Interface, error) {
+					return struct{ watch.Interface }{}, nil
+				},
 			},
 			eventWatcher: func(ctx context.Context, watcher watch.Interface) (string, error) {
 				if eventWatcherCount == 0 {
@@ -258,7 +272,7 @@ func TestWatch(t *testing.T) {
 			ctx = test.ctx
 		}
 
-		err := r.watch(ctx, RTNamespace, test.spanWatcher)
+		err := r.watch(ctx, RTNamespace, test.spawnWatchers)
 		switch {
 		case test.wantErr && err == nil:
 			t.Errorf("TestWatch(%s): got err == nil, want err != nil", test.name)
