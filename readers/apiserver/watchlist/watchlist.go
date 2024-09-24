@@ -92,6 +92,8 @@ const (
 	RTRBAC = reader.RTRBAC
 	// RTService retrieves service data.
 	RTService = reader.RTService
+	// RTDeployment retrieves deployment data.
+	RTDeployment = reader.RTDeployment
 )
 
 // New creates a new Reader object. retrieveTypes is a bitwise flag to determine what data to retrieve.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -99,7 +100,26 @@ const (
 	RTRBAC RetrieveType = 1 << 4 // RBAC
 	// RTService retrieves service data.
 	RTService RetrieveType = 1 << 5 // Services
+	// RTDeployment retrieves deployment data.
+	RTDeployment RetrieveType = 1 << 6 // Deployment
 )
+
+// rtMap is a dynamically created map of RetrieveType.
+var rtMap = map[RetrieveType]func(ctx context.Context) []spawnWatcher{}
+var rtMapOnce sync.Once
+
+func init() {
+	var i uint32 = 0
+
+	for {
+		rt := RetrieveType(1 << i)
+		if strings.HasPrefix(rt.String(), "RetrieveType") {
+			break
+		}
+		rtMap[rt] = nil
+		i++
+	}
+}
 
 // New creates a new Reader object. retrieveTypes is a bitwise flag to determine what data to retrieve.
 func New(ctx context.Context, clientset *kubernetes.Clientset, retrieveTypes RetrieveType, opts ...Option) (*Reader, error) {
@@ -121,10 +141,15 @@ func New(ctx context.Context, clientset *kubernetes.Clientset, retrieveTypes Ret
 	}
 	r.filterOpts = append(r.filterOpts, watchlist.WithLogger(r.log))
 
-	if retrieveTypes&RTNode != RTNode &&
-		retrieveTypes&RTPod != RTPod &&
-		retrieveTypes&RTNamespace != RTNamespace &&
-		retrieveTypes&RTPersistentVolume != RTPersistentVolume {
+	// Make sure they passed a valid retrieveTypes.
+	found := false
+	for rt := range rtMap {
+		if retrieveTypes&rt == rt {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return nil, fmt.Errorf("no data types to retrieve")
 	}
 
@@ -174,6 +199,10 @@ func (r *Reader) Run(ctx context.Context) (err error) {
 	if r.ch == nil {
 		return fmt.Errorf("cannot call Run if SetOut has not been called(%v)", r.ch)
 	}
+	r.mapCreators()
+	if mapCreationErr != nil {
+		return mapCreationErr
+	}
 
 	defer func() {
 		if err != nil {
@@ -187,61 +216,49 @@ func (r *Reader) Run(ctx context.Context) (err error) {
 
 	ctx, r.cancelWatches = context.WithCancel(context.WithoutCancel(ctx))
 
-	if r.retrieveTypes&RTNamespace == RTNamespace {
-		if err := r.startWatch(ctx, r.cancelWatches, RTNamespace); err != nil {
-			if errors.Is(err, context.Canceled) {
-				err = fmt.Errorf("could not connect to server by deadline")
+	for rt := range rtMap {
+		if r.retrieveTypes&rt == rt {
+			if err := r.startWatch(ctx, r.cancelWatches, rt); err != nil {
+				if errors.Is(err, context.Canceled) {
+					err = fmt.Errorf("could not connect to server by deadline")
+				}
+				return fmt.Errorf("error starting %s watcher: %v", rt.String(), err)
 			}
-			return fmt.Errorf("error starting namespace watcher: %v", err)
-		}
-	}
-
-	if r.retrieveTypes&RTPersistentVolume == RTPersistentVolume {
-		if err := r.startWatch(ctx, r.cancelWatches, RTPersistentVolume); err != nil {
-			if errors.Is(err, context.Canceled) {
-				err = fmt.Errorf("could not connect to server by deadline")
-			}
-			return fmt.Errorf("error starting persistent volume watcher: %v", err)
-		}
-	}
-
-	if r.retrieveTypes&RTNode == RTNode {
-		if err := r.startWatch(ctx, r.cancelWatches, RTNode); err != nil {
-			if errors.Is(err, context.Canceled) {
-				err = fmt.Errorf("could not connect to server by deadline")
-			}
-			return fmt.Errorf("error starting node watcher: %v", err)
-		}
-	}
-
-	if r.retrieveTypes&RTPod == RTPod {
-		if err := r.startWatch(ctx, r.cancelWatches, RTPod); err != nil {
-			if errors.Is(err, context.Canceled) {
-				err = fmt.Errorf("could not connect to server by deadline")
-			}
-			return fmt.Errorf("error starting pod watcher: %v", err)
-		}
-	}
-
-	if r.retrieveTypes&RTRBAC == RTRBAC {
-		if err := r.startWatch(ctx, r.cancelWatches, RTRBAC); err != nil {
-			if errors.Is(err, context.Canceled) {
-				err = fmt.Errorf("could not connect to server by deadline")
-			}
-			return fmt.Errorf("error starting rbac watcher: %v", err)
-		}
-	}
-
-	if r.retrieveTypes&RTService == RTService {
-		if err := r.startWatch(ctx, r.cancelWatches, RTService); err != nil {
-			if errors.Is(err, context.Canceled) {
-				err = fmt.Errorf("could not connect to server by deadline")
-			}
-			return fmt.Errorf("error starting service watcher: %v", err)
 		}
 	}
 
 	return nil
+}
+
+var mapCreationErr error
+
+// mapCreators creates the map of RetrieveType to spawnWatcher functions. While their is a map here,
+// we want to make sure that we have defined the mapping of all methods to bitwise flags we have defined.
+// This function is used to make sure that mapping is correct.
+func (r *Reader) mapCreators() {
+	rtMapOnce.Do(func() {
+		m := map[RetrieveType]func(ctx context.Context) []spawnWatcher{
+			RTNode:             r.createNodesWatcher,
+			RTPod:              r.createPodsWatcher,
+			RTNamespace:        r.createNamespaceWatcher,
+			RTPersistentVolume: r.createPersistentVolumesWatcher,
+			RTRBAC:             r.createRBACWatcher,
+			RTService:          r.createServicesWatcher,
+			RTDeployment:       r.createDeploymentsWatcher,
+		}
+
+		if len(m) != len(rtMap) {
+			mapCreationErr = fmt.Errorf("Bug: create watcher map length does not equal RetrieveType map length")
+		}
+
+		for rt, creator := range m {
+			if _, ok := rtMap[rt]; !ok {
+				mapCreationErr = fmt.Errorf("Bug: RetrieveType %s not found in rtMap", rt.String())
+				return
+			}
+			rtMap[rt] = creator
+		}
+	})
 }
 
 // startWatch starts a watcher for a resource type. This will return an error if the watcher could not
@@ -261,23 +278,7 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt R
 		}
 	}()
 
-	var spanWatchers []spawnWatcher
-	switch rt {
-	case RTNamespace:
-		spanWatchers = r.createNamespaceWatcher(ctx)
-	case RTNode:
-		spanWatchers = r.createNodesWatcher(ctx)
-	case RTPod:
-		spanWatchers = r.createPodsWatcher(ctx)
-	case RTPersistentVolume:
-		spanWatchers = r.createPersistentVolumesWatcher(ctx)
-	case RTRBAC:
-		spanWatchers = r.createRBACWatcher(ctx)
-	case RTService:
-		spanWatchers = r.createServiceWatcher(ctx)
-	default:
-		return fmt.Errorf("unknown object type: %v", rt)
-	}
+	spanWatchers := rtMap[rt](ctx)
 
 	if err := r.watch(ctx, rt, spanWatchers); err != nil {
 		return fmt.Errorf("error starting namespace watcher: %v", err)
@@ -370,10 +371,22 @@ func (r *Reader) createRBACWatcher(ctx context.Context) []spawnWatcher {
 	}
 }
 
-func (r *Reader) createServiceWatcher(ctx context.Context) []spawnWatcher {
+func (r *Reader) createServicesWatcher(ctx context.Context) []spawnWatcher {
 	return []spawnWatcher{
 		func(options metav1.ListOptions) (watch.Interface, error) {
 			wi, err := r.clientset.CoreV1().Services("").Watch(ctx, options)
+			if err != nil {
+				panic(err.Error())
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createDeploymentsWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.AppsV1().Deployments("").Watch(ctx, options)
 			if err != nil {
 				panic(err.Error())
 			}
