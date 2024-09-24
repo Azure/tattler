@@ -41,7 +41,7 @@ type Reader struct {
 	meterProvider metric.MeterProvider
 
 	// For testing.
-	fakeWatch       func(context.Context, RetrieveType, spanWatcher) error
+	fakeWatch       func(context.Context, RetrieveType, []spawnWatcher) error
 	fakeWatchEvents func(context.Context, watch.Interface) (string, error)
 }
 
@@ -88,13 +88,15 @@ type RetrieveType uint32
 
 const (
 	// RTNode retrieves node data.
-	RTNode RetrieveType = 0x1 // Node
+	RTNode RetrieveType = 1 << 0 // Node
 	// RTPod retrieves pod data.
-	RTPod RetrieveType = 0x2 // Pod
+	RTPod RetrieveType = 1 << 1 // Pod
 	// RTNamespace retrieves namespace data.
-	RTNamespace RetrieveType = 0x4 // Namespace
+	RTNamespace RetrieveType = 1 << 2 // Namespace
 	// RTPersistentVolume retrieves persistent volume data.
-	RTPersistentVolume RetrieveType = 0x8 // PersistentVolume
+	RTPersistentVolume RetrieveType = 1 << 3 // PersistentVolume
+	// RTRBAC retrieves role-based access control data.
+	RTRBAC RetrieveType = 1 << 4 // RBAC
 )
 
 // New creates a new Reader object. retrieveTypes is a bitwise flag to determine what data to retrieve.
@@ -159,8 +161,8 @@ func (r *Reader) SetOut(ctx context.Context, out chan data.Entry) error {
 	return nil
 }
 
-// spanWatcher is a function that creates a watcher for a resource.
-type spanWatcher func(options metav1.ListOptions) (watch.Interface, error)
+// spawnWatcher is a function that creates a watcher for a resource.
+type spawnWatcher func(options metav1.ListOptions) (watch.Interface, error)
 
 // Run starts the Reader. This will start all watchers and begin sending data to the output channel.
 func (r *Reader) Run(ctx context.Context) (err error) {
@@ -219,6 +221,15 @@ func (r *Reader) Run(ctx context.Context) (err error) {
 		}
 	}
 
+	if r.retrieveTypes&RTRBAC == RTRBAC {
+		if err := r.startWatch(ctx, r.cancelWatches, RTRBAC); err != nil {
+			if errors.Is(err, context.Canceled) {
+				err = fmt.Errorf("could not connect to server by deadline")
+			}
+			return fmt.Errorf("error starting rbac watcher: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -238,22 +249,24 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt R
 			cancel()
 		}
 	}()
-	ws := func(options metav1.ListOptions) (watch.Interface, error) {
-		switch rt {
-		case RTNamespace:
-			return r.clientset.CoreV1().Namespaces().Watch(ctx, options)
-		case RTNode:
-			return r.clientset.CoreV1().Nodes().Watch(ctx, options)
-		case RTPod:
-			return r.clientset.CoreV1().Pods("").Watch(ctx, options)
-		case RTPersistentVolume:
-			return r.clientset.CoreV1().PersistentVolumes().Watch(ctx, options)
-		default:
-			return nil, fmt.Errorf("unknown object type: %v", rt)
-		}
+
+	var spanWatchers []spawnWatcher
+	switch rt {
+	case RTNamespace:
+		spanWatchers = r.createNamespaceWatcher(ctx)
+	case RTNode:
+		spanWatchers = r.createNodesWatcher(ctx)
+	case RTPod:
+		spanWatchers = r.createPodsWatcher(ctx)
+	case RTPersistentVolume:
+		spanWatchers = r.createPersistentVolumesWatcher(ctx)
+	case RTRBAC:
+		spanWatchers = r.createRBACWatcher(ctx)
+	default:
+		return fmt.Errorf("unknown object type: %v", rt)
 	}
 
-	if err := r.watch(ctx, rt, ws); err != nil {
+	if err := r.watch(ctx, rt, spanWatchers); err != nil {
 		return fmt.Errorf("error starting namespace watcher: %v", err)
 	}
 	if ctx.Err() != nil {
@@ -261,6 +274,87 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt R
 	}
 	close(finished)
 	return ctx.Err()
+}
+
+func (r *Reader) createNamespaceWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().Namespaces().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createNodesWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().Nodes().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createPodsWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().Pods("").Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createPersistentVolumesWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().PersistentVolumes().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createRBACWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.RbacV1().Roles(metav1.NamespaceAll).Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.RbacV1().RoleBindings(metav1.NamespaceAll).Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.RbacV1().ClusterRoles().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.RbacV1().ClusterRoleBindings().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
 }
 
 // setupFilter sets up the filter cache for the Reader.
@@ -279,9 +373,9 @@ func (r *Reader) setupFilter(ctx context.Context) error {
 // an error, the initial watcher could not be created. This will return nil
 // if the initial watcher is created, but underlying calls go on in a goroutine.
 // This will handle automatic reconnection.
-func (r *Reader) watch(ctx context.Context, rt RetrieveType, spanWatcher spanWatcher) error {
+func (r *Reader) watch(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 	if r.fakeWatch != nil {
-		return r.fakeWatch(ctx, rt, spanWatcher)
+		return r.fakeWatch(ctx, rt, spawnWatchers)
 	}
 
 	if ctx.Err() != nil {
@@ -294,27 +388,52 @@ func (r *Reader) watch(ctx context.Context, rt RetrieveType, spanWatcher spanWat
 		Watch:           true,
 	}
 
-	watcher, err := spanWatcher(options)
-	if err != nil {
-		return fmt.Errorf("error creating %v watcher: %v", rt, err)
-	}
-
-	r.waitWatchers.Go(ctx, func(ctx context.Context) error {
-		for {
-			var err error
-			rv, err = r.watchEvents(ctx, watcher)
-			if err != nil {
-				r.log.Error(fmt.Sprintf("error watching %v events: %v", rt, err))
-			}
-			if ctx.Err() != nil {
-				return nil
-			}
-			watcher, err = spanWatcher(options)
-			if err != nil {
-				r.log.Error(fmt.Sprintf("error creating %v watcher: %v", rt, err))
+	var err error
+	watchers := make([]watch.Interface, len(spawnWatchers))
+	defer func() {
+		if err != nil {
+			for _, watcher := range watchers {
+				if watcher != nil {
+					watcher.Stop()
+				}
 			}
 		}
-	})
+	}()
+	for i := 0; i < len(spawnWatchers); i++ {
+		var watcher watch.Interface
+		watcher, err = spawnWatchers[i](options)
+		if err != nil {
+			return fmt.Errorf("error creating %v watcher: %v", rt, err)
+		}
+		watchers[i] = watcher
+	}
+
+	for i, watcher := range watchers {
+		i := i
+		watcher := watcher
+
+		r.waitWatchers.Go(ctx, func(ctx context.Context) error {
+			watcher := watcher
+			for {
+				// This blocks until watchEvents returns, which is when a watcher is closed.
+				var err error
+				rv, err = r.watchEvents(ctx, watcher)
+				if err != nil {
+					r.log.Error(fmt.Sprintf("error watching %v events: %v", rt, err))
+				}
+				// This would indicate that the watcher was intentionally closed.
+				if ctx.Err() != nil {
+					return nil
+				}
+
+				// Since it was not intentionally closed, we should try to reconnect.
+				watcher, err = spawnWatchers[i](options)
+				if err != nil {
+					r.log.Error(fmt.Sprintf("error creating %v watcher: %v", rt, err))
+				}
+			}
+		})
+	}
 
 	return nil
 }

@@ -87,6 +87,9 @@ const (
 	RTNamespace = reader.RTNamespace
 	// RTPersistentVolume retrieves persistent volume data.
 	RTPersistentVolume = reader.RTPersistentVolume
+	// RTRBAC retrieves RBAC data. This includes all namespaced roles and cluster roles plus
+	// all role bindings and cluster role bindings.
+	RTRBAC = reader.RTRBAC
 )
 
 // New creates a new Reader object. retrieveTypes is a bitwise flag to determine what data to retrieve.
