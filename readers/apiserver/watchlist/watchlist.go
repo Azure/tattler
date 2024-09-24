@@ -90,6 +90,8 @@ const (
 	// RTRBAC retrieves RBAC data. This includes all namespaced roles and cluster roles plus
 	// all role bindings and cluster role bindings.
 	RTRBAC = reader.RTRBAC
+	// RTService retrieves service data.
+	RTService = reader.RTService
 )
 
 // New creates a new Reader object. retrieveTypes is a bitwise flag to determine what data to retrieve.

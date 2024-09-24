@@ -147,14 +147,24 @@ func TestRun(t *testing.T) {
 			wantRetrieveTypes: []RetrieveType{RTRBAC},
 		},
 		{
-			name:          "All success",
+			name:          "Services success",
 			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTNamespace | RTPersistentVolume | RTNode | RTPod | RTRBAC,
+			retrieveTypes: RTService,
 			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
-			wantRetrieveTypes: []RetrieveType{RTNamespace, RTPersistentVolume, RTNode, RTPod, RTRBAC},
+			wantRetrieveTypes: []RetrieveType{RTService},
+		},
+		{
+			name:          "All success",
+			ch:            make(chan data.Entry, 1),
+			retrieveTypes: RTNamespace | RTPersistentVolume | RTNode | RTPod | RTRBAC | RTService,
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
+				watchesCalled = append(watchesCalled, rt)
+				return nil
+			},
+			wantRetrieveTypes: []RetrieveType{RTNamespace, RTPersistentVolume, RTNode, RTPod, RTRBAC, RTService},
 		},
 	}
 
