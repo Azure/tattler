@@ -97,6 +97,8 @@ const (
 	RTPersistentVolume RetrieveType = 1 << 3 // PersistentVolume
 	// RTRBAC retrieves role-based access control data.
 	RTRBAC RetrieveType = 1 << 4 // RBAC
+	// RTService retrieves service data.
+	RTService RetrieveType = 1 << 5 // Services
 )
 
 // New creates a new Reader object. retrieveTypes is a bitwise flag to determine what data to retrieve.
@@ -230,6 +232,15 @@ func (r *Reader) Run(ctx context.Context) (err error) {
 		}
 	}
 
+	if r.retrieveTypes&RTService == RTService {
+		if err := r.startWatch(ctx, r.cancelWatches, RTService); err != nil {
+			if errors.Is(err, context.Canceled) {
+				err = fmt.Errorf("could not connect to server by deadline")
+			}
+			return fmt.Errorf("error starting service watcher: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -262,6 +273,8 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt R
 		spanWatchers = r.createPersistentVolumesWatcher(ctx)
 	case RTRBAC:
 		spanWatchers = r.createRBACWatcher(ctx)
+	case RTService:
+		spanWatchers = r.createServiceWatcher(ctx)
 	default:
 		return fmt.Errorf("unknown object type: %v", rt)
 	}
@@ -351,6 +364,18 @@ func (r *Reader) createRBACWatcher(ctx context.Context) []spawnWatcher {
 			wi, err := r.clientset.RbacV1().ClusterRoleBindings().Watch(ctx, options)
 			if err != nil {
 				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createServiceWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().Services("").Watch(ctx, options)
+			if err != nil {
+				panic(err.Error())
 			}
 			return wi, nil
 		},
