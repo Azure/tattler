@@ -102,6 +102,10 @@ const (
 	RTService RetrieveType = 1 << 5 // Services
 	// RTDeployment retrieves deployment data.
 	RTDeployment RetrieveType = 1 << 6 // Deployment
+	// RTIngressController retrieves ingress controller data.
+	RTIngressController RetrieveType = 1 << 7 // IngressController
+	// RTEndpoint retrieves endpoint data.
+	RTEndpoint RetrieveType = 1 << 8 // Endpoint
 )
 
 // rtMap is a dynamically created map of RetrieveType.
@@ -238,13 +242,15 @@ var mapCreationErr error
 func (r *Reader) mapCreators() {
 	rtMapOnce.Do(func() {
 		m := map[RetrieveType]func(ctx context.Context) []spawnWatcher{
-			RTNode:             r.createNodesWatcher,
-			RTPod:              r.createPodsWatcher,
-			RTNamespace:        r.createNamespaceWatcher,
-			RTPersistentVolume: r.createPersistentVolumesWatcher,
-			RTRBAC:             r.createRBACWatcher,
-			RTService:          r.createServicesWatcher,
-			RTDeployment:       r.createDeploymentsWatcher,
+			RTNode:              r.createNodesWatcher,
+			RTPod:               r.createPodsWatcher,
+			RTNamespace:         r.createNamespaceWatcher,
+			RTPersistentVolume:  r.createPersistentVolumesWatcher,
+			RTRBAC:              r.createRBACWatcher,
+			RTService:           r.createServicesWatcher,
+			RTDeployment:        r.createDeploymentsWatcher,
+			RTIngressController: r.createIngressesWatcher,
+			RTEndpoint:          r.createEndpointsWatcher,
 		}
 
 		if len(m) != len(rtMap) {
@@ -387,6 +393,30 @@ func (r *Reader) createDeploymentsWatcher(ctx context.Context) []spawnWatcher {
 	return []spawnWatcher{
 		func(options metav1.ListOptions) (watch.Interface, error) {
 			wi, err := r.clientset.AppsV1().Deployments("").Watch(ctx, options)
+			if err != nil {
+				panic(err.Error())
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createIngressesWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.NetworkingV1().Ingresses("").Watch(ctx, options)
+			if err != nil {
+				panic(err.Error())
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createEndpointsWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().Endpoints("").Watch(ctx, options)
 			if err != nil {
 				panic(err.Error())
 			}

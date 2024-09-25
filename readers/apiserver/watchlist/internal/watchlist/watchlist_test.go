@@ -6,6 +6,7 @@ import (
 	"log"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,14 +168,45 @@ func TestRun(t *testing.T) {
 			wantRetrieveTypes: []RetrieveType{RTDeployment},
 		},
 		{
-			name:          "All success",
+			name:          "Ingress Controller success",
 			ch:            make(chan data.Entry, 1),
-			retrieveTypes: RTNamespace | RTPersistentVolume | RTNode | RTPod | RTRBAC | RTService | RTDeployment,
+			retrieveTypes: RTIngressController,
 			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
-			wantRetrieveTypes: []RetrieveType{RTNamespace, RTPersistentVolume, RTNode, RTPod, RTRBAC, RTService, RTDeployment},
+			wantRetrieveTypes: []RetrieveType{RTIngressController},
+		},
+		{
+			name:          "Endpoint success",
+			ch:            make(chan data.Entry, 1),
+			retrieveTypes: RTEndpoint,
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
+				watchesCalled = append(watchesCalled, rt)
+				return nil
+			},
+			wantRetrieveTypes: []RetrieveType{RTEndpoint},
+		},
+		{
+			name: "All success",
+			ch:   make(chan data.Entry, 1),
+			retrieveTypes: (RTNamespace | RTPersistentVolume | RTNode | RTPod | RTRBAC | RTService | RTDeployment |
+				RTIngressController | RTEndpoint),
+			fakeWatch: func(ctx context.Context, rt RetrieveType, spawnWatchers []spawnWatcher) error {
+				watchesCalled = append(watchesCalled, rt)
+				return nil
+			},
+			wantRetrieveTypes: []RetrieveType{
+				RTNamespace,
+				RTPersistentVolume,
+				RTNode,
+				RTPod,
+				RTRBAC,
+				RTService,
+				RTDeployment,
+				RTIngressController,
+				RTEndpoint,
+			},
 		},
 	}
 
@@ -194,6 +226,9 @@ func TestRun(t *testing.T) {
 			t.Errorf("TestRun(%s): got err == nil, want err != nil", test.name)
 			continue
 		case !test.wantErr && err != nil:
+			if strings.Contains(err.Error(), "Bug") {
+				t.Logf("TestRun(%s): you have probably forgotten to do go generate ./...", test.name)
+			}
 			t.Errorf("TestRun(%s): got err == %v, want err == nil", test.name, err)
 			continue
 		}
@@ -204,7 +239,6 @@ func TestRun(t *testing.T) {
 			t.Errorf("TestRun(%s): retrieveTypes: -want/+got:\n%s", test.name, diff)
 		}
 	}
-
 }
 
 func TestSetupCache(t *testing.T) {
