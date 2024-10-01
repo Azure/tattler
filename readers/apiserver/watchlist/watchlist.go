@@ -92,6 +92,12 @@ const (
 	RTRBAC = reader.RTRBAC
 	// RTService retrieves service data.
 	RTService = reader.RTService
+	// RTDeployment retrieves deployment data.
+	RTDeployment = reader.RTDeployment
+	// RTIngressController retrieves ingress controller data.
+	RTIngressController = reader.RTIngressController
+	// RTEndpoints retrieves endpoints data.
+	RTEndpoint = reader.RTEndpoint
 )
 
 // New creates a new Reader object. retrieveTypes is a bitwise flag to determine what data to retrieve.

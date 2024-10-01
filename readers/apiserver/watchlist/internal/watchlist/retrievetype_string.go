@@ -14,6 +14,9 @@ func _() {
 	_ = x[RTPersistentVolume-8]
 	_ = x[RTRBAC-16]
 	_ = x[RTService-32]
+	_ = x[RTDeployment-64]
+	_ = x[RTIngressController-128]
+	_ = x[RTEndpoint-256]
 }
 
 const (
@@ -22,6 +25,9 @@ const (
 	_RetrieveType_name_2 = "PersistentVolume"
 	_RetrieveType_name_3 = "RBAC"
 	_RetrieveType_name_4 = "Services"
+	_RetrieveType_name_5 = "Deployment"
+	_RetrieveType_name_6 = "IngressController"
+	_RetrieveType_name_7 = "Endpoint"
 )
 
 var (
@@ -41,6 +47,12 @@ func (i RetrieveType) String() string {
 		return _RetrieveType_name_3
 	case i == 32:
 		return _RetrieveType_name_4
+	case i == 64:
+		return _RetrieveType_name_5
+	case i == 128:
+		return _RetrieveType_name_6
+	case i == 256:
+		return _RetrieveType_name_7
 	default:
 		return "RetrieveType(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
