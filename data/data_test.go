@@ -5,6 +5,7 @@ import (
 
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -80,6 +81,58 @@ func TestNewEntry(t *testing.T) {
 				sourceType: STWatchList,
 				changeType: CTAdd,
 				objectType: OTPod,
+				uid:        meta.UID,
+			},
+		},
+		{
+			name: "Success: ClusterRole type",
+			obj:  &rbacv1.ClusterRole{ObjectMeta: meta},
+			st:   STWatchList,
+			ct:   CTAdd,
+			want: Entry{
+				data:       &rbacv1.ClusterRole{ObjectMeta: meta},
+				sourceType: STWatchList,
+				changeType: CTAdd,
+				objectType: OTClusterRole,
+				uid:        meta.UID,
+			},
+		},
+		{
+			name: "Success: ClusterRoleBinding type",
+			obj:  &rbacv1.ClusterRoleBinding{ObjectMeta: meta},
+			st:   STWatchList,
+			ct:   CTAdd,
+			want: Entry{
+				data:       &rbacv1.ClusterRoleBinding{ObjectMeta: meta},
+				sourceType: STWatchList,
+				changeType: CTAdd,
+				objectType: OTClusterRoleBinding,
+				uid:        meta.UID,
+			},
+		},
+		{
+			name: "Success: Role type",
+			obj:  &rbacv1.Role{ObjectMeta: meta},
+			st:   STWatchList,
+			ct:   CTAdd,
+			want: Entry{
+				data:       &rbacv1.Role{ObjectMeta: meta},
+				sourceType: STWatchList,
+				changeType: CTAdd,
+				objectType: OTRole,
+				uid:        meta.UID,
+			},
+		},
+		{
+			name: "Success: RoleBinding type",
+			obj:  &rbacv1.RoleBinding{ObjectMeta: meta},
+			st:   STWatchList,
+			ct:   CTAdd,
+			want: Entry{
+				data:       &rbacv1.RoleBinding{ObjectMeta: meta},
+				sourceType: STWatchList,
+				changeType: CTAdd,
+				objectType: OTRoleBinding,
 				uid:        meta.UID,
 			},
 		},
