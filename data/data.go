@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -45,6 +46,14 @@ const (
 	OTNamespace ObjectType = 3 // Namespace
 	// OTPersistentVolume indicates the data is a persistent volume.
 	OTPersistentVolume ObjectType = 4 // PersistentVolume
+	// OTClusterRole indicates the data is a cluster role.
+	OTClusterRole ObjectType = 5 // ClusterRole
+	// OTClusterRoleBinding indicates the data is a cluster role binding.
+	OTClusterRoleBinding ObjectType = 6 // ClusterRoleBinding
+	// OTRole indicates the data is a role.
+	OTRole ObjectType = 7 // Role
+	// OTRoleBinding indicates the data is a role binding.
+	OTRoleBinding ObjectType = 8 // RoleBinding
 )
 
 //go:generate stringer -type=ChangeType -linecomment
@@ -69,7 +78,7 @@ const (
 
 // ingestObj is a generic type for objects that can be ingested.
 type ingestObj interface {
-	*corev1.Node | *corev1.Pod | *corev1.Namespace | *corev1.PersistentVolume
+	*corev1.Node | *corev1.Pod | *corev1.Namespace | *corev1.PersistentVolume | *rbacv1.ClusterRole | *rbacv1.ClusterRoleBinding | *rbacv1.Role | *rbacv1.RoleBinding
 
 	runtime.Object
 
@@ -104,6 +113,14 @@ func NewEntry(obj runtime.Object, st SourceType, ct ChangeType) (Entry, error) {
 		return newEntry(v, st, ct)
 	case *corev1.PersistentVolume:
 		return newEntry(v, st, ct)
+	case *rbacv1.ClusterRole:
+		return newEntry(v, st, ct)
+	case *rbacv1.ClusterRoleBinding:
+		return newEntry(v, st, ct)
+	case *rbacv1.Role:
+		return newEntry(v, st, ct)
+	case *rbacv1.RoleBinding:
+		return newEntry(v, st, ct)
 	}
 	return Entry{}, ErrInvalidType
 }
@@ -124,6 +141,14 @@ func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 		ot = OTNamespace
 	case *corev1.PersistentVolume:
 		ot = OTPersistentVolume
+	case *rbacv1.ClusterRole:
+		ot = OTClusterRole
+	case *rbacv1.ClusterRoleBinding:
+		ot = OTClusterRoleBinding
+	case *rbacv1.Role:
+		ot = OTRole
+	case *rbacv1.RoleBinding:
+		ot = OTRoleBinding
 	default:
 		return Entry{}, fmt.Errorf("unknown object type(%T)", v)
 	}
@@ -190,6 +215,26 @@ func (e Entry) Namespace() (*corev1.Namespace, error) {
 // PersistentVolume returns the data as a persistent volume type change. An error is returned if the type is not PersistentVolume.
 func (e Entry) PersistentVolume() (*corev1.PersistentVolume, error) {
 	return assert[*corev1.PersistentVolume](e.data)
+}
+
+// ClusterRole returns the data as a cluster role type change. An error is returned if the type is not ClusterRole.
+func (e Entry) ClusterRole() (*rbacv1.ClusterRole, error) {
+	return assert[*rbacv1.ClusterRole](e.data)
+}
+
+// ClusterRoleBinding returns the data as a cluster role binding type change. An error is returned if the type is not ClusterRoleBinding.
+func (e Entry) ClusterRoleBinding() (*rbacv1.ClusterRoleBinding, error) {
+	return assert[*rbacv1.ClusterRoleBinding](e.data)
+}
+
+// Role returns the data as a role type change. An error is returned if the type is not Role.
+func (e Entry) Role() (*rbacv1.Role, error) {
+	return assert[*rbacv1.Role](e.data)
+}
+
+// RoleBinding returns the data as a role binding type change. An error is returned if the type is not RoleBinding.
+func (e Entry) RoleBinding() (*rbacv1.RoleBinding, error) {
+	return assert[*rbacv1.RoleBinding](e.data)
 }
 
 // assert asserts the type of the object to the type specfied by the AssertTo generic type.
