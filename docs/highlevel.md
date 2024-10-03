@@ -61,7 +61,7 @@ reader(s) -> safety.Secrets -> preprocessing -> batching.Batcher -> routing.Batc
 
 The pipeline is not parallel, but is concurrent. That is, every stage is in its own goroutine, but the pipeline itself is not. That means that every stage can be working on a separate piece of data.
 
-If at some point we need to have mulitple pipelines, we would need to handle re-ordering at the end and adding locking or lock-free datastructures in place of maps we have today.  I I do not feel this will be necessary.
+If at some point we need to have multiple pipelines, we would need to handle re-ordering at the end and adding locking or lock-free datastructures in place of maps we have today.  I do not feel this will be necessary.
 
 ### Adding an APIServer reader
 
