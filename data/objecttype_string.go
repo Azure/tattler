@@ -17,11 +17,15 @@ func _() {
 	_ = x[OTClusterRoleBinding-6]
 	_ = x[OTRole-7]
 	_ = x[OTRoleBinding-8]
+	_ = x[OTService-9]
+	_ = x[OTDeployment-10]
+	_ = x[OTIngressController-11]
+	_ = x[OTEndpoint-12]
 }
 
-const _ObjectType_name = "UnknownNodePodNamespacePersistentVolumeClusterRoleClusterRoleBindingRoleRoleBinding"
+const _ObjectType_name = "UnknownNodePodNamespacePersistentVolumeClusterRoleClusterRoleBindingRoleRoleBindingServiceDeploymentIngressControllerEndpoint"
 
-var _ObjectType_index = [...]uint8{0, 7, 11, 14, 23, 39, 50, 68, 72, 83}
+var _ObjectType_index = [...]uint8{0, 7, 11, 14, 23, 39, 50, 68, 72, 83, 90, 100, 117, 125}
 
 func (i ObjectType) String() string {
 	if i >= ObjectType(len(_ObjectType_index)-1) {

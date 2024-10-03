@@ -4,7 +4,9 @@ import (
 	"testing"
 
 	"github.com/kylelemons/godebug/pretty"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -133,6 +135,58 @@ func TestNewEntry(t *testing.T) {
 				sourceType: STWatchList,
 				changeType: CTAdd,
 				objectType: OTRoleBinding,
+				uid:        meta.UID,
+			},
+		},
+		{
+			name: "Success: Service type",
+			obj:  &corev1.Service{ObjectMeta: meta},
+			st:   STWatchList,
+			ct:   CTAdd,
+			want: Entry{
+				data:       &corev1.Service{ObjectMeta: meta},
+				sourceType: STWatchList,
+				changeType: CTAdd,
+				objectType: OTService,
+				uid:        meta.UID,
+			},
+		},
+		{
+			name: "Success: Deployment type",
+			obj:  &appsv1.Deployment{ObjectMeta: meta},
+			st:   STWatchList,
+			ct:   CTAdd,
+			want: Entry{
+				data:       &appsv1.Deployment{ObjectMeta: meta},
+				sourceType: STWatchList,
+				changeType: CTAdd,
+				objectType: OTDeployment,
+				uid:        meta.UID,
+			},
+		},
+		{
+			name: "Success: Ingress type",
+			obj:  &networkingv1.Ingress{ObjectMeta: meta},
+			st:   STWatchList,
+			ct:   CTAdd,
+			want: Entry{
+				data:       &networkingv1.Ingress{ObjectMeta: meta},
+				sourceType: STWatchList,
+				changeType: CTAdd,
+				objectType: OTIngressController,
+				uid:        meta.UID,
+			},
+		},
+		{
+			name: "Success: Endpoints type",
+			obj:  &corev1.Endpoints{ObjectMeta: meta},
+			st:   STWatchList,
+			ct:   CTAdd,
+			want: Entry{
+				data:       &corev1.Endpoints{ObjectMeta: meta},
+				sourceType: STWatchList,
+				changeType: CTAdd,
+				objectType: OTEndpoint,
 				uid:        meta.UID,
 			},
 		},

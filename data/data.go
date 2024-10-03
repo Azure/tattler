@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -54,6 +56,14 @@ const (
 	OTRole ObjectType = 7 // Role
 	// OTRoleBinding indicates the data is a role binding.
 	OTRoleBinding ObjectType = 8 // RoleBinding
+	// OTService indicates the data is a service.
+	OTService ObjectType = 9 // Service
+	// OTDeployment indicates the data is a deployment.
+	OTDeployment ObjectType = 10 // Deployment
+	// OTIngressController indicates the data is an ingress controller.
+	OTIngressController ObjectType = 11 // IngressController
+	// OTEndpoint indicates the data is an endpoint.
+	OTEndpoint ObjectType = 12 // Endpoint
 )
 
 //go:generate stringer -type=ChangeType -linecomment
@@ -78,7 +88,9 @@ const (
 
 // ingestObj is a generic type for objects that can be ingested.
 type ingestObj interface {
-	*corev1.Node | *corev1.Pod | *corev1.Namespace | *corev1.PersistentVolume | *rbacv1.ClusterRole | *rbacv1.ClusterRoleBinding | *rbacv1.Role | *rbacv1.RoleBinding
+	*corev1.Node | *corev1.Pod | *corev1.Namespace | *corev1.PersistentVolume |
+		*rbacv1.ClusterRole | *rbacv1.ClusterRoleBinding | *rbacv1.Role | *rbacv1.RoleBinding |
+		*corev1.Service | *appsv1.Deployment | *networkingv1.Ingress | *corev1.Endpoints
 
 	runtime.Object
 
@@ -121,6 +133,14 @@ func NewEntry(obj runtime.Object, st SourceType, ct ChangeType) (Entry, error) {
 		return newEntry(v, st, ct)
 	case *rbacv1.RoleBinding:
 		return newEntry(v, st, ct)
+	case *corev1.Service:
+		return newEntry(v, st, ct)
+	case *appsv1.Deployment:
+		return newEntry(v, st, ct)
+	case *networkingv1.Ingress:
+		return newEntry(v, st, ct)
+	case *corev1.Endpoints:
+		return newEntry(v, st, ct)
 	}
 	return Entry{}, ErrInvalidType
 }
@@ -149,6 +169,14 @@ func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 		ot = OTRole
 	case *rbacv1.RoleBinding:
 		ot = OTRoleBinding
+	case *corev1.Service:
+		ot = OTService
+	case *appsv1.Deployment:
+		ot = OTDeployment
+	case *networkingv1.Ingress:
+		ot = OTIngressController
+	case *corev1.Endpoints:
+		ot = OTEndpoint
 	default:
 		return Entry{}, fmt.Errorf("unknown object type(%T)", v)
 	}
@@ -235,6 +263,26 @@ func (e Entry) Role() (*rbacv1.Role, error) {
 // RoleBinding returns the data as a role binding type change. An error is returned if the type is not RoleBinding.
 func (e Entry) RoleBinding() (*rbacv1.RoleBinding, error) {
 	return assert[*rbacv1.RoleBinding](e.data)
+}
+
+// Service returns the data as a service type change. An error is returned if the type is not Service.
+func (e Entry) Service() (*corev1.Service, error) {
+	return assert[*corev1.Service](e.data)
+}
+
+// Deployment returns the data as a deployment type change. An error is returned if the type is not Deployment.
+func (e Entry) Deployment() (*appsv1.Deployment, error) {
+	return assert[*appsv1.Deployment](e.data)
+}
+
+// IngressController returns the data as an ingress controller type change. An error is returned if the type is not IngressController.
+func (e Entry) IngressController() (*networkingv1.Ingress, error) {
+	return assert[*networkingv1.Ingress](e.data)
+}
+
+// Endpoint returns the data as an endpoint type change. An error is returned if the type is not Endpoint.
+func (e Entry) Endpoint() (*corev1.Endpoints, error) {
+	return assert[*corev1.Endpoints](e.data)
 }
 
 // assert asserts the type of the object to the type specfied by the AssertTo generic type.
