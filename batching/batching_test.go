@@ -7,12 +7,105 @@ import (
 
 	"github.com/Azure/tattler/data"
 	"github.com/google/uuid"
+	"github.com/gostdlib/concurrency/prim/wait"
 
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	_ "go.uber.org/automaxprocs"
 )
+
+// TestBatchingLimit tests that the batching limit is respected.
+func TestBatchingLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	in := make(chan data.Entry, 1000)
+	out := make(chan Batches, 1)
+	finals := [][]data.Entry{}
+
+	_, err := New(ctx, in, out, 3*time.Second)
+	if err != nil {
+		panic(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for entry := range out {
+			if entry.Len() > 1000 {
+				panic("batch size is too big")
+			}
+			for _, batch := range entry {
+				l := make([]data.Entry, 0, len(batch.Data))
+				for _, v := range batch.Data.Map() {
+					l = append(l, v)
+				}
+				finals = append(finals, l)
+			}
+			entry.Recycle()
+		}
+	}()
+
+	g := wait.Group{}
+	g.Go(
+		ctx,
+		func(ctx context.Context) error {
+			for i := 0; i < 1000000; i++ {
+				pod := &corev1.Pod{
+					ObjectMeta: v1.ObjectMeta{
+						UID: types.UID(uuid.New().String()),
+					},
+				}
+				in <- data.MustNewEntry(pod, data.STWatchList, data.CTAdd)
+			}
+			return nil
+		},
+	)
+	g.Go(
+		ctx,
+		func(ctx context.Context) error {
+			for i := 0; i < 150000; i++ {
+				node := &corev1.Node{
+					ObjectMeta: v1.ObjectMeta{
+						UID: types.UID(uuid.New().String()),
+					},
+				}
+				in <- data.MustNewEntry(node, data.STWatchList, data.CTAdd)
+			}
+			return nil
+		},
+	)
+
+	g.Go(
+		ctx,
+		func(ctx context.Context) error {
+			for i := 0; i < 1000; i++ {
+				ns := &corev1.Namespace{
+					ObjectMeta: v1.ObjectMeta{
+						UID: types.UID(uuid.New().String()),
+					},
+				}
+				in <- data.MustNewEntry(ns, data.STWatchList, data.CTAdd)
+			}
+			return nil
+		},
+	)
+
+	if err := g.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	close(in)
+
+	<-done
+
+	for _, final := range finals {
+		if len(final) > 1000 {
+			t.Fatalf("batch size is too big: %d", len(final))
+		}
+	}
+}
 
 func TestHandleInput(t *testing.T) {
 	t.Parallel()

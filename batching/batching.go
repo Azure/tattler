@@ -239,8 +239,13 @@ func (b *Batcher) handleInput(ctx context.Context, tick <-chan time.Time) (exit 
 			return false, err
 		}
 
-		if b.batchSize > 0 && (b.current.Len() >= b.batchSize) {
-			b.emitter(ctx)
+		if b.batchSize > 0 {
+			if b.current.Len() == b.batchSize {
+				b.emitter(ctx)
+			} else if b.current.Len() > b.batchSize {
+				b.log.Error("Bug: batch size exceeded in Batcher")
+				b.emitter(ctx)
+			}
 		}
 	case <-tick:
 		if b.current.Len() == 0 {
