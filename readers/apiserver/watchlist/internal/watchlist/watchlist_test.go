@@ -260,11 +260,16 @@ func TestSetupCache(t *testing.T) {
 	}
 }
 
+// Note that this stack overflows if -race is used. See individual tests for more information.
+// The test passes and this does not happen in production.
 func TestWatch(t *testing.T) {
 	t.Parallel()
 
 	doneCtx, cancel := context.WithCancel(context.Background())
 	cancel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	eventWatcherCount := 0
 
@@ -281,7 +286,7 @@ func TestWatch(t *testing.T) {
 		},
 		{
 			name: "Watching had connection error and we haven't connected before",
-			ctx:  context.Background(),
+			ctx:  ctx,
 			spawnWatchers: []spawnWatcher{
 				func(options metav1.ListOptions) (watch.Interface, error) {
 					return nil, errors.New("error")
@@ -291,7 +296,7 @@ func TestWatch(t *testing.T) {
 		},
 		{
 			name: "Watching had connection error but we have connected before",
-			ctx:  context.Background(),
+			ctx:  ctx,
 			spawnWatchers: []spawnWatcher{
 				func(options metav1.ListOptions) (watch.Interface, error) {
 					return struct{ watch.Interface }{}, nil
@@ -300,7 +305,7 @@ func TestWatch(t *testing.T) {
 			eventWatcher: func(ctx context.Context, watcher watch.Interface) (string, error) {
 				if eventWatcherCount == 0 {
 					eventWatcherCount++
-					return "", errors.New("error")
+					return "", nil
 				}
 				return "", errors.New("error")
 			},

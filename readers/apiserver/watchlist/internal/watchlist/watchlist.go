@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -481,14 +483,17 @@ func (r *Reader) watch(ctx context.Context, rt RetrieveType, spawnWatchers []spa
 		watcher := watcher
 
 		r.waitWatchers.Go(ctx, func(ctx context.Context) error {
+			log.Println("happens")
 			watcher := watcher
 			for {
 				// This blocks until watchEvents returns, which is when a watcher is closed.
 				var err error
-				rv, err = r.watchEvents(ctx, watcher)
+				log.Println("before watchEvents happens	")
+				_, err = r.watchEvents(ctx, watcher)
 				if err != nil {
 					r.log.Error(fmt.Sprintf("error watching %v events: %v", rt, err))
 				}
+				log.Println("watchEvents happens")
 				// This would indicate that the watcher was intentionally closed.
 				if ctx.Err() != nil {
 					return nil
@@ -499,6 +504,7 @@ func (r *Reader) watch(ctx context.Context, rt RetrieveType, spawnWatchers []spa
 				if err != nil {
 					r.log.Error(fmt.Sprintf("error creating %v watcher: %v", rt, err))
 				}
+				time.Sleep(time.Duration(1+rand.IntN(10)) * time.Second)
 			}
 		})
 	}
@@ -512,7 +518,7 @@ func (r *Reader) watch(ctx context.Context, rt RetrieveType, spawnWatchers []spa
 // This blocks until the watcher is closed.
 func (r *Reader) watchEvents(ctx context.Context, watcher watch.Interface) (string, error) {
 	if r.fakeWatchEvents != nil {
-		return r.watchEvents(ctx, watcher)
+		return r.fakeWatchEvents(ctx, watcher)
 	}
 
 	ch := watcher.ResultChan()
