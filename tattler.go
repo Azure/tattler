@@ -13,7 +13,6 @@ package tattler
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"sync"
 	"time"
@@ -186,9 +185,7 @@ func (r *Runner) AddReader(ctx context.Context, reader Reader) error {
 		return fmt.Errorf("Reader(%T).SetOut(): %w", r, err)
 	}
 	if r.started {
-		log.Println("here")
 		if err := reader.Run(ctx); err != nil {
-			log.Println("got here")
 			return fmt.Errorf("reader(%T): %w", reader, err)
 		}
 	}
