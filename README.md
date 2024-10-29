@@ -10,9 +10,14 @@ Currently, Tattler supports the following object types:
 - Pod
 - Node
 - Namepace
+- Services
+- Endpoints
+- Deployments
+- Persistent Volumes
+- RBAC Role, Cluster Role, Binding and Cluster Binding
 
 We currently pull from the following sources:
-- Kubernetes API Server
+- Kubernetes API Server (via Watchlists)
 
 In the future, we plan to support more object types and sources.
 
