@@ -2,6 +2,7 @@ package batching
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -358,13 +360,16 @@ func TestAll(t *testing.T) {
 			batches: Batches{
 				data.STInformer: Batch{
 					Data{
-						"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
-						"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate),
+						"test":  data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a"}}, data.STInformer, data.CTAdd),
+						"test2": data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b"}}, data.STInformer, data.CTUpdate),
 					},
 					time.Now(),
 				},
 			},
-			want: []data.Entry{data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd), data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate)},
+			want: []data.Entry{
+				data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a"}}, data.STInformer, data.CTAdd),
+				data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b"}}, data.STInformer, data.CTUpdate),
+			},
 		},
 	}
 
@@ -374,10 +379,27 @@ func TestAll(t *testing.T) {
 			entries = append(entries, d)
 		}
 
+		sortPod := func(i, j int) bool {
+			pod1, _ := entries[i].Pod()
+			pod2, _ := entries[j].Pod()
+			if pod1.Name < pod2.Name {
+				return true
+			}
+			return false
+		}
+
+		sort.Slice(
+			entries,
+			sortPod,
+		)
+		sort.Slice(
+			test.want,
+			sortPod,
+		)
+
 		if diff := pretty.Compare(test.want, entries); diff != "" {
 			t.Errorf("TestAll: .current: -want/+got:\n%s", diff)
 		}
-
 	}
 }
 
