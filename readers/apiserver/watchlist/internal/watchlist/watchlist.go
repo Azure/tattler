@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"math/rand/v2"
 	"strings"
@@ -483,17 +482,14 @@ func (r *Reader) watch(ctx context.Context, rt RetrieveType, spawnWatchers []spa
 		watcher := watcher
 
 		r.waitWatchers.Go(ctx, func(ctx context.Context) error {
-			log.Println("happens")
 			watcher := watcher
 			for {
 				// This blocks until watchEvents returns, which is when a watcher is closed.
 				var err error
-				log.Println("before watchEvents happens	")
 				_, err = r.watchEvents(ctx, watcher)
 				if err != nil {
 					r.log.Error(fmt.Sprintf("error watching %v events: %v", rt, err))
 				}
-				log.Println("watchEvents happens")
 				// This would indicate that the watcher was intentionally closed.
 				if ctx.Err() != nil {
 					return nil
