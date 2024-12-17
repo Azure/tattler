@@ -206,6 +206,8 @@ func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 	}, nil
 }
 
+var nower = time.Now
+
 // getUpdateTime gets the last update time from the managed fields.
 // If no managed fields are present, the current time is returned.
 func getUpdateTime(accessor metav1.Object) time.Time {
@@ -216,7 +218,7 @@ func getUpdateTime(accessor metav1.Object) time.Time {
 		}
 	}
 	if modifiedTime.IsZero() {
-		return time.Now()
+		return nower()
 	}
 	return modifiedTime
 }

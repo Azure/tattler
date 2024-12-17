@@ -13,16 +13,31 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+var expectedNow = time.Now()
+
+func init() {
+	nower = func() time.Time {
+		return expectedNow
+	}
+}
+
 func TestNewEntry(t *testing.T) {
 	t.Parallel()
 
 	meta := metav1.ObjectMeta{
-		UID: "123",
+		UID:               "123",
+		CreationTimestamp: metav1.Time{Time: time.Now().Add(-time.Hour)},
+	}
+
+	meta1 := metav1.ObjectMeta{
+		UID:               "123",
+		CreationTimestamp: metav1.Time{Time: time.Now().Add(-time.Hour)},
 		ManagedFields: []metav1.ManagedFieldsEntry{
 			{
 				Manager:    "kubelet",
 				Operation:  "Update",
 				FieldsType: "FieldsV1",
+				APIVersion: "v1",
 				Time:       &metav1.Time{Time: time.Now()},
 			},
 		},
@@ -59,14 +74,14 @@ func TestNewEntry(t *testing.T) {
 		},
 		{
 			name: "Success: Node type",
-			obj:  &corev1.Node{ObjectMeta: meta},
+			obj:  &corev1.Node{ObjectMeta: meta1},
 			st:   STInformer,
 			ct:   CTUpdate,
 			want: Entry{
-				data:       &corev1.Node{ObjectMeta: meta},
+				data:       &corev1.Node{ObjectMeta: meta1},
 				sourceType: STInformer,
 				changeType: CTUpdate,
-				changeTime: meta.ManagedFields[0].Time.Time,
+				changeTime: meta1.ManagedFields[0].Time.Time,
 				objectType: OTNode,
 				uid:        meta.UID,
 			},
@@ -89,12 +104,12 @@ func TestNewEntry(t *testing.T) {
 			name: "Success: Pod type",
 			obj:  &corev1.Pod{ObjectMeta: meta},
 			st:   STWatchList,
-			ct:   CTAdd,
+			ct:   CTUpdate,
 			want: Entry{
 				data:       &corev1.Pod{ObjectMeta: meta},
 				sourceType: STWatchList,
-				changeType: CTAdd,
-				changeTime: meta.CreationTimestamp.Time,
+				changeType: CTUpdate,
+				changeTime: expectedNow,
 				objectType: OTPod,
 				uid:        meta.UID,
 			},
