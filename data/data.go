@@ -150,16 +150,6 @@ func NewEntry(obj runtime.Object, st SourceType, ct ChangeType) (Entry, error) {
 	return Entry{}, ErrInvalidType
 }
 
-func getChangeTime(accessor metav1.Object) time.Time {
-	modifiedTime := accessor.GetCreationTimestamp().Time
-	for _, mf := range accessor.GetManagedFields() {
-		if mf.Time != nil && modifiedTime.Before(mf.Time.Time) {
-			modifiedTime = mf.Time.Time
-		}
-	}
-	return modifiedTime
-}
-
 // newEntry creates a new Entry.
 func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 	if obj == nil {
@@ -171,9 +161,9 @@ func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 		return Entry{}, fmt.Errorf("failed to get accessor: %w", err)
 	}
 	changeTime := accessor.GetCreationTimestamp().Time
-	// dig last update time out of managed fields, if update or snapshot
+	// Dig last update time out of managed fields, if update or snapshot.
 	if ct == CTUpdate || ct == CTSnapshot {
-		changeTime = getChangeTime(accessor)
+		changeTime = getUpdateTime(accessor)
 	}
 
 	var ot ObjectType
@@ -216,6 +206,21 @@ func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 	}, nil
 }
 
+// getUpdateTime gets the last update time from the managed fields.
+// If no managed fields are present, the current time is returned.
+func getUpdateTime(accessor metav1.Object) time.Time {
+	var modifiedTime time.Time
+	for _, mf := range accessor.GetManagedFields() {
+		if mf.Time != nil && modifiedTime.Before(mf.Time.Time) {
+			modifiedTime = mf.Time.Time
+		}
+	}
+	if modifiedTime.IsZero() {
+		return time.Now()
+	}
+	return modifiedTime
+}
+
 // MustNewEntry creates a new Entry. It panics if an error occurs.
 func MustNewEntry[T runtime.Object](obj T, st SourceType, ct ChangeType) Entry {
 	e, err := NewEntry(obj, st, ct)
@@ -242,8 +247,8 @@ func (e Entry) ChangeType() ChangeType {
 }
 
 // ChangeTime returns a pointer to the time that the change occurred.
-func (e Entry) ChangeTime() *time.Time {
-	return &e.changeTime
+func (e Entry) ChangeTime() time.Time {
+	return e.changeTime
 }
 
 // SourceType returns the data source of the entry.

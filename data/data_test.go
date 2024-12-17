@@ -2,6 +2,7 @@ package data
 
 import (
 	"testing"
+	"time"
 
 	"github.com/kylelemons/godebug/pretty"
 	appsv1 "k8s.io/api/apps/v1"
@@ -17,6 +18,14 @@ func TestNewEntry(t *testing.T) {
 
 	meta := metav1.ObjectMeta{
 		UID: "123",
+		ManagedFields: []metav1.ManagedFieldsEntry{
+			{
+				Manager:    "kubelet",
+				Operation:  "Update",
+				FieldsType: "FieldsV1",
+				Time:       &metav1.Time{Time: time.Now()},
+			},
+		},
 	}
 
 	tests := []struct {
@@ -43,6 +52,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &corev1.Namespace{ObjectMeta: meta},
 				sourceType: STInformer,
 				changeType: CTDelete,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTNamespace,
 				uid:        meta.UID,
 			},
@@ -56,6 +66,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &corev1.Node{ObjectMeta: meta},
 				sourceType: STInformer,
 				changeType: CTUpdate,
+				changeTime: meta.ManagedFields[0].Time.Time,
 				objectType: OTNode,
 				uid:        meta.UID,
 			},
@@ -69,6 +80,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &corev1.PersistentVolume{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTPersistentVolume,
 				uid:        meta.UID,
 			},
@@ -82,6 +94,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &corev1.Pod{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTPod,
 				uid:        meta.UID,
 			},
@@ -95,6 +108,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &rbacv1.ClusterRole{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTClusterRole,
 				uid:        meta.UID,
 			},
@@ -108,6 +122,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &rbacv1.ClusterRoleBinding{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTClusterRoleBinding,
 				uid:        meta.UID,
 			},
@@ -121,6 +136,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &rbacv1.Role{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTRole,
 				uid:        meta.UID,
 			},
@@ -134,6 +150,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &rbacv1.RoleBinding{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTRoleBinding,
 				uid:        meta.UID,
 			},
@@ -147,6 +164,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &corev1.Service{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTService,
 				uid:        meta.UID,
 			},
@@ -160,6 +178,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &appsv1.Deployment{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTDeployment,
 				uid:        meta.UID,
 			},
@@ -173,6 +192,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &networkingv1.Ingress{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTIngressController,
 				uid:        meta.UID,
 			},
@@ -186,6 +206,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &corev1.Endpoints{ObjectMeta: meta},
 				sourceType: STWatchList,
 				changeType: CTAdd,
+				changeTime: meta.CreationTimestamp.Time,
 				objectType: OTEndpoint,
 				uid:        meta.UID,
 			},
