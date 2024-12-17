@@ -6,11 +6,14 @@ package data
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -111,6 +114,8 @@ type Entry struct {
 	changeType ChangeType
 	// ObjectType is the type of the object.
 	objectType ObjectType
+	// ChangeTime is the time the change occurred.
+	changeTime time.Time
 }
 
 // NewEntry creates a new Entry. The underlying object must be a corev1.Node, corev1.Pod,
@@ -145,10 +150,30 @@ func NewEntry(obj runtime.Object, st SourceType, ct ChangeType) (Entry, error) {
 	return Entry{}, ErrInvalidType
 }
 
+func getChangeTime(accessor metav1.Object) time.Time {
+	modifiedTime := accessor.GetCreationTimestamp().Time
+	for _, mf := range accessor.GetManagedFields() {
+		if mf.Time != nil && modifiedTime.Before(mf.Time.Time) {
+			modifiedTime = mf.Time.Time
+		}
+	}
+	return modifiedTime
+}
+
 // newEntry creates a new Entry.
 func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 	if obj == nil {
 		return Entry{}, fmt.Errorf("new object is nil")
+	}
+
+	accessor, err := meta.Accessor(obj)
+	if err != nil {
+		return Entry{}, fmt.Errorf("failed to get accessor: %w", err)
+	}
+	changeTime := accessor.GetCreationTimestamp().Time
+	// dig last update time out of managed fields, if update or snapshot
+	if ct == CTUpdate || ct == CTSnapshot {
+		changeTime = getChangeTime(accessor)
 	}
 
 	var ot ObjectType
@@ -186,6 +211,7 @@ func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 		uid:        obj.GetUID(),
 		sourceType: st,
 		changeType: ct,
+		changeTime: changeTime,
 		objectType: ot,
 	}, nil
 }
@@ -213,6 +239,11 @@ func (e Entry) ObjectType() ObjectType {
 // ChangeType returns the type of change that occurred, add, update or delete.
 func (e Entry) ChangeType() ChangeType {
 	return e.changeType
+}
+
+// ChangeTime returns a pointer to the time that the change occurred.
+func (e Entry) ChangeTime() *time.Time {
+	return &e.changeTime
 }
 
 // SourceType returns the data source of the entry.
