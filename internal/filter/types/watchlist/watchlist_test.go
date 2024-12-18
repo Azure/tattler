@@ -136,6 +136,17 @@ func TestEventToEntry(t *testing.T) {
 	}
 	creationTimestamp := metav1.Time{Time: time.Now().Add(-time.Hour)}
 
+	meta1 := metav1.ObjectMeta{
+		Name:              "a",
+		ManagedFields:     managedFields,
+		CreationTimestamp: creationTimestamp,
+	}
+	meta2 := metav1.ObjectMeta{
+		Name:              "b",
+		ManagedFields:     managedFields,
+		CreationTimestamp: creationTimestamp,
+	}
+
 	tests := []struct {
 		name       string
 		ctx        context.Context
@@ -148,52 +159,41 @@ func TestEventToEntry(t *testing.T) {
 			event: watch.Event{
 				Type: watch.Added,
 				Object: &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						CreationTimestamp: creationTimestamp,
-					},
+					ObjectMeta: meta1,
 				},
 			},
-			want: data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: creationTimestamp}}, data.STWatchList, data.CTAdd),
+			want: data.MustNewEntry(&corev1.Pod{ObjectMeta: meta1}, data.STWatchList, data.CTAdd),
 		},
 		{
 			name: "Modified event",
 			event: watch.Event{
 				Type: watch.Modified,
 				Object: &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						CreationTimestamp: creationTimestamp,
-						ManagedFields:     managedFields,
-					},
+					ObjectMeta: meta2,
 				},
 			},
-			want: data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: creationTimestamp, ManagedFields: managedFields}}, data.STWatchList, data.CTUpdate),
+			want: data.MustNewEntry(&corev1.Pod{ObjectMeta: meta2}, data.STWatchList, data.CTUpdate),
 		},
 		{
 			name: "Deleted event",
 			event: watch.Event{
 				Type: watch.Deleted,
 				Object: &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						CreationTimestamp: creationTimestamp,
-						ManagedFields:     managedFields,
-					},
+					ObjectMeta: meta2,
 				},
 			},
-			want: data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: creationTimestamp, ManagedFields: managedFields}}, data.STWatchList, data.CTDelete),
+			want: data.MustNewEntry(&corev1.Pod{ObjectMeta: meta2}, data.STWatchList, data.CTDelete),
 		},
 		{
 			name: "Snapshot event",
 			event: watch.Event{
 				Type: watch.Added,
 				Object: &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						CreationTimestamp: creationTimestamp,
-						ManagedFields:     managedFields,
-					},
+					ObjectMeta: meta2,
 				},
 			},
 			isSnapshot: true,
-			want:       data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: creationTimestamp, ManagedFields: managedFields}}, data.STWatchList, data.CTSnapshot),
+			want:       data.MustNewEntry(&corev1.Pod{ObjectMeta: meta2}, data.STWatchList, data.CTSnapshot),
 		},
 	}
 
