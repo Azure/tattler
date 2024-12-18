@@ -338,6 +338,17 @@ func TestRecycle(t *testing.T) {
 func TestAll(t *testing.T) {
 	t.Parallel()
 
+	managedFields := []metav1.ManagedFieldsEntry{
+		{
+			Manager:    "test",
+			Operation:  "Apply",
+			APIVersion: "v1",
+			Time:       &metav1.Time{Time: time.Now()},
+		},
+	}
+	// need creation timestamp
+	creationTimestamp := metav1.Time{Time: time.Now().Add(-time.Hour)}
+
 	tests := []struct {
 		name    string
 		batches Batches
@@ -348,27 +359,27 @@ func TestAll(t *testing.T) {
 			batches: Batches{
 				data.STInformer: Batch{
 					Data{
-						"test": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+						"test": data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", CreationTimestamp: creationTimestamp}}, data.STInformer, data.CTAdd),
 					},
 					time.Now(),
 				},
 			},
-			want: []data.Entry{data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd)},
+			want: []data.Entry{data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", CreationTimestamp: creationTimestamp}}, data.STInformer, data.CTAdd)},
 		},
 		{
 			name: "multiple entries in one batch",
 			batches: Batches{
 				data.STInformer: Batch{
 					Data{
-						"test":  data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a"}}, data.STInformer, data.CTAdd),
-						"test2": data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b"}}, data.STInformer, data.CTUpdate),
+						"test":  data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", CreationTimestamp: creationTimestamp}}, data.STInformer, data.CTAdd),
+						"test2": data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b", ManagedFields: managedFields}}, data.STInformer, data.CTUpdate),
 					},
 					time.Now(),
 				},
 			},
 			want: []data.Entry{
-				data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a"}}, data.STInformer, data.CTAdd),
-				data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b"}}, data.STInformer, data.CTUpdate),
+				data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", CreationTimestamp: creationTimestamp}}, data.STInformer, data.CTAdd),
+				data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b", ManagedFields: managedFields}}, data.STInformer, data.CTUpdate),
 			},
 		},
 	}
