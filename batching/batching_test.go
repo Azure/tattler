@@ -338,6 +338,7 @@ func TestRecycle(t *testing.T) {
 func TestAll(t *testing.T) {
 	t.Parallel()
 
+	// Set managedFields for Update and creationTimestamp for Add for deterministic changeTime in results.
 	managedFields := []metav1.ManagedFieldsEntry{
 		{
 			Manager:    "test",
@@ -346,7 +347,6 @@ func TestAll(t *testing.T) {
 			Time:       &metav1.Time{Time: time.Now()},
 		},
 	}
-	// need creation timestamp
 	creationTimestamp := metav1.Time{Time: time.Now().Add(-time.Hour)}
 
 	tests := []struct {
