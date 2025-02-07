@@ -13,16 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// var nower = time.Now
-
-// var expectedNow = time.Now()
-
-// func init() {
-// 	nower = func() time.Time {
-// 		return expectedNow
-// 	}
-// }
-
 var procs = []Processor{
 	func(ctx context.Context, e data.Entry) error {
 		if e == (data.Entry{}) {
