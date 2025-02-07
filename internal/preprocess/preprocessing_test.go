@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Azure/tattler/data"
 
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var procs = []Processor{
@@ -33,14 +34,14 @@ func TestRun(t *testing.T) {
 
 	in := make(chan data.Entry, 1)
 	out := make(chan data.Entry, 1)
-	want := data.MustNewEntry(&corev1.Node{ObjectMeta: v1.ObjectMeta{Name: "test"}}, data.STInformer, data.CTAdd)
+	want := data.MustNewEntry(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test"}}, data.STInformer, data.CTAdd)
 
 	_, err := New(context.Background(), in, out, procs)
 	if err != nil {
 		panic(err)
 	}
 
-	in <- data.MustNewEntry(&corev1.Node{ObjectMeta: v1.ObjectMeta{Name: "bad name"}}, data.STInformer, data.CTAdd)
+	in <- data.MustNewEntry(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "bad name"}}, data.STInformer, data.CTAdd)
 	close(in)
 
 	if diff := pretty.Compare(want, <-out); diff != "" {
@@ -55,6 +56,21 @@ func TestRun(t *testing.T) {
 func TestProcessEntry(t *testing.T) {
 	t.Parallel()
 
+	// Deletion and update timestamp are set so that output is deterministic.
+	meta := metav1.ObjectMeta{
+		UID:               "123",
+		DeletionTimestamp: &metav1.Time{Time: time.Now()},
+		ManagedFields: []metav1.ManagedFieldsEntry{
+			{
+				Manager:    "kubelet",
+				Operation:  "Update",
+				FieldsType: "FieldsV1",
+				APIVersion: "v1",
+				Time:       &metav1.Time{Time: time.Now()},
+			},
+		},
+	}
+
 	tests := []struct {
 		name    string
 		in      data.Entry
@@ -68,13 +84,13 @@ func TestProcessEntry(t *testing.T) {
 		},
 		{
 			name: "node will have its name changed",
-			in:   data.MustNewEntry(&corev1.Node{ObjectMeta: v1.ObjectMeta{Name: "bad name"}}, data.STInformer, data.CTAdd),
-			want: data.MustNewEntry(&corev1.Node{ObjectMeta: v1.ObjectMeta{Name: "test"}}, data.STInformer, data.CTAdd),
+			in:   data.MustNewEntry(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "bad name"}}, data.STInformer, data.CTAdd),
+			want: data.MustNewEntry(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test"}}, data.STInformer, data.CTAdd),
 		},
 		{
 			name: "pod will not have its name changed",
-			in:   data.MustNewEntry(&corev1.Pod{ObjectMeta: v1.ObjectMeta{Name: "bad name"}}, data.STInformer, data.CTDelete),
-			want: data.MustNewEntry(&corev1.Pod{ObjectMeta: v1.ObjectMeta{Name: "bad name"}}, data.STInformer, data.CTDelete),
+			in:   data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "bad name", DeletionTimestamp: meta.DeletionTimestamp, ManagedFields: meta.ManagedFields}}, data.STInformer, data.CTDelete),
+			want: data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "bad name", DeletionTimestamp: meta.DeletionTimestamp, ManagedFields: meta.ManagedFields}}, data.STInformer, data.CTDelete),
 		},
 	}
 
