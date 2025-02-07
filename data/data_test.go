@@ -29,6 +29,7 @@ func TestNewEntry(t *testing.T) {
 		CreationTimestamp: metav1.Time{Time: time.Now().Add(-time.Hour)},
 	}
 
+	// multiple updates in managed fields where the last update time is the latest
 	meta1 := metav1.ObjectMeta{
 		UID:               "123",
 		CreationTimestamp: metav1.Time{Time: time.Now().Add(-time.Hour)},
@@ -38,7 +39,66 @@ func TestNewEntry(t *testing.T) {
 				Operation:  "Update",
 				FieldsType: "FieldsV1",
 				APIVersion: "v1",
+				Time:       &metav1.Time{Time: time.Now().Add(-time.Minute)},
+			},
+			{
+				Manager:    "kubelet",
+				Operation:  "Update",
+				FieldsType: "FieldsV1",
+				APIVersion: "v1",
 				Time:       &metav1.Time{Time: time.Now()},
+			},
+		},
+	}
+
+	// deletion timestamp is set but is before the last update time
+	meta2 := metav1.ObjectMeta{
+		UID:               "123",
+		DeletionTimestamp: &metav1.Time{Time: time.Now().Add(-time.Hour)},
+		ManagedFields: []metav1.ManagedFieldsEntry{
+			{
+				Manager:    "kubelet",
+				Operation:  "Update",
+				FieldsType: "FieldsV1",
+				APIVersion: "v1",
+				Time:       &metav1.Time{Time: time.Now()},
+			},
+		},
+	}
+
+	// deletion timestamp is set to after last update time
+	meta3 := metav1.ObjectMeta{
+		UID:               "123",
+		DeletionTimestamp: &metav1.Time{Time: time.Now().Add(1 * time.Minute)},
+		ManagedFields: []metav1.ManagedFieldsEntry{
+			{
+				Manager:    "kubelet",
+				Operation:  "Update",
+				FieldsType: "FieldsV1",
+				APIVersion: "v1",
+				Time:       &metav1.Time{Time: time.Now()},
+			},
+		},
+	}
+
+	// multiple updates in managed fields where the last update time is the latest
+	meta4 := metav1.ObjectMeta{
+		UID:               "123",
+		CreationTimestamp: metav1.Time{Time: time.Now().Add(-time.Hour)},
+		ManagedFields: []metav1.ManagedFieldsEntry{
+			{
+				Manager:    "kubelet",
+				Operation:  "Update",
+				FieldsType: "FieldsV1",
+				APIVersion: "v1",
+				Time:       &metav1.Time{Time: time.Now()},
+			},
+			{
+				Manager:    "kubelet",
+				Operation:  "Update",
+				FieldsType: "FieldsV1",
+				APIVersion: "v1",
+				Time:       &metav1.Time{Time: time.Now().Add(-time.Minute)},
 			},
 		},
 	}
@@ -67,7 +127,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &corev1.Namespace{ObjectMeta: meta},
 				sourceType: STInformer,
 				changeType: CTDelete,
-				changeTime: meta.CreationTimestamp.Time,
+				changeTime: expectedNow,
 				objectType: OTNamespace,
 				uid:        meta.UID,
 			},
@@ -81,7 +141,7 @@ func TestNewEntry(t *testing.T) {
 				data:       &corev1.Node{ObjectMeta: meta1},
 				sourceType: STInformer,
 				changeType: CTUpdate,
-				changeTime: meta1.ManagedFields[0].Time.Time,
+				changeTime: meta1.ManagedFields[1].Time.Time,
 				objectType: OTNode,
 				uid:        meta.UID,
 			},
@@ -158,44 +218,44 @@ func TestNewEntry(t *testing.T) {
 		},
 		{
 			name: "Success: RoleBinding type",
-			obj:  &rbacv1.RoleBinding{ObjectMeta: meta},
+			obj:  &rbacv1.RoleBinding{ObjectMeta: meta2},
 			st:   STWatchList,
-			ct:   CTAdd,
+			ct:   CTDelete,
 			want: Entry{
-				data:       &rbacv1.RoleBinding{ObjectMeta: meta},
+				data:       &rbacv1.RoleBinding{ObjectMeta: meta2},
 				sourceType: STWatchList,
-				changeType: CTAdd,
-				changeTime: meta.CreationTimestamp.Time,
+				changeType: CTDelete,
+				changeTime: meta2.ManagedFields[0].Time.Time,
 				objectType: OTRoleBinding,
-				uid:        meta.UID,
+				uid:        meta2.UID,
 			},
 		},
 		{
 			name: "Success: Service type",
-			obj:  &corev1.Service{ObjectMeta: meta},
+			obj:  &corev1.Service{ObjectMeta: meta3},
 			st:   STWatchList,
-			ct:   CTAdd,
+			ct:   CTDelete,
 			want: Entry{
-				data:       &corev1.Service{ObjectMeta: meta},
+				data:       &corev1.Service{ObjectMeta: meta3},
 				sourceType: STWatchList,
-				changeType: CTAdd,
-				changeTime: meta.CreationTimestamp.Time,
+				changeType: CTDelete,
+				changeTime: meta3.DeletionTimestamp.Time,
 				objectType: OTService,
-				uid:        meta.UID,
+				uid:        meta3.UID,
 			},
 		},
 		{
 			name: "Success: Deployment type",
-			obj:  &appsv1.Deployment{ObjectMeta: meta},
+			obj:  &appsv1.Deployment{ObjectMeta: meta4},
 			st:   STWatchList,
-			ct:   CTAdd,
+			ct:   CTUpdate,
 			want: Entry{
-				data:       &appsv1.Deployment{ObjectMeta: meta},
+				data:       &appsv1.Deployment{ObjectMeta: meta4},
 				sourceType: STWatchList,
-				changeType: CTAdd,
-				changeTime: meta.CreationTimestamp.Time,
+				changeType: CTUpdate,
+				changeTime: meta4.ManagedFields[0].Time.Time,
 				objectType: OTDeployment,
-				uid:        meta.UID,
+				uid:        meta4.UID,
 			},
 		},
 		{

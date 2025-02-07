@@ -165,6 +165,9 @@ func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
 	if ct == CTUpdate || ct == CTSnapshot {
 		changeTime = getUpdateTime(accessor)
 	}
+	if ct == CTDelete {
+		changeTime = getDeletionTime(accessor)
+	}
 
 	var ot ObjectType
 	switch v := any(obj).(type) {
@@ -221,6 +224,17 @@ func getUpdateTime(accessor metav1.Object) time.Time {
 		return nower()
 	}
 	return modifiedTime
+}
+
+// return the most recent of the deletion and update times, since an item's status might be patched
+// after deletion with a later timestamp than the deletion timestamp.
+func getDeletionTime(accessor metav1.Object) time.Time {
+	updateTime := getUpdateTime(accessor)
+	deletedTime := accessor.GetDeletionTimestamp()
+	if deletedTime != nil && deletedTime.Time.After(updateTime) {
+		return deletedTime.Time
+	}
+	return updateTime
 }
 
 // MustNewEntry creates a new Entry. It panics if an error occurs.
