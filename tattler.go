@@ -182,11 +182,11 @@ func (r *Runner) AddReader(ctx context.Context, reader Reader) error {
 	defer r.mu.Unlock()
 
 	if err := reader.SetOut(ctx, r.input); err != nil {
-		return fmt.Errorf("Reader(%T).SetOut(): %w", r, err)
+		return fmt.Errorf("Reader(%T).SetOut(): %w", reader, err)
 	}
 	if r.started {
 		if err := reader.Run(ctx); err != nil {
-			return fmt.Errorf("reader(%T): %w", reader, err)
+			return fmt.Errorf("Reader(%T).Run(): %w", reader, err)
 		}
 	}
 	r.readers = append(r.readers, reader)
@@ -224,5 +224,6 @@ func (r *Runner) Start(ctx context.Context) error {
 	if err := r.router.Start(ctx); err != nil {
 		return err
 	}
+	r.started = true
 	return nil
 }
