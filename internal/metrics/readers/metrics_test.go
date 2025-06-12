@@ -60,18 +60,19 @@ func TestWatchListMetrics(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		ctx := context.Background()
 		registry := prometheus.NewRegistry()
 		exporter, err := otelprometheus.New(append(test.options, otelprometheus.WithRegisterer(registry))...)
 		if err != nil {
-			t.Fatalf("TestWatchListMetrics(%s) failed to create prometheus exporter: %v", test.name, err)
+			t.Errorf("TestWatchListMetrics(%s) failed to create prometheus exporter: %v", test.name, err)
+			continue
 		}
 
 		var res *resource.Resource
 		if test.emptyResource {
 			res = resource.Empty()
 		} else {
-			res, err = resource.New(ctx,
+			res, err = resource.New(
+				t.Context(),
 				// always specify service.name because the default depends on the running OS
 				resource.WithAttributes(semconv.ServiceName("tattler_test")),
 				// Overwrite the semconv.TelemetrySDKVersionKey value so we don't need to update every version
@@ -79,12 +80,14 @@ func TestWatchListMetrics(t *testing.T) {
 				resource.WithAttributes(test.customResouceAttrs...),
 			)
 			if err != nil {
-				t.Fatalf("TestWatchListMetrics(%s): failed to create resource: %v", test.name, err)
+				t.Errorf("TestWatchListMetrics(%s): failed to create resource: %v", test.name, err)
+				continue
 			}
 
 			res, err = resource.Merge(resource.Default(), res)
 			if err != nil {
-				t.Fatalf("TestWatchListMetrics(%s): failed to merge resources: %v", test.name, err)
+				t.Errorf("TestWatchListMetrics(%s): failed to merge resources: %v", test.name, err)
+				continue
 			}
 		}
 
@@ -97,18 +100,20 @@ func TestWatchListMetrics(t *testing.T) {
 			otelmetric.WithInstrumentationVersion("v0.1.0"),
 		)
 
-		test.recordMetrics(ctx, meter)
+		test.recordMetrics(t.Context(), meter)
 
 		mfs, err := registry.Gather()
 		if err != nil {
-			t.Fatal(err)
+			panic(err)
 		}
 		if want, got := test.wantMetricCount, len(mfs); want != got {
 			t.Errorf("TestWatchListMetrics(%s) unexpected number of metric families gathered, want %d, got %d", test.name, want, got)
+			continue
 		}
 		for _, mf := range mfs {
 			if len(mf.Metric) == 0 {
 				t.Errorf("TestWatchListMetrics(%s) metric family %s must not be empty", test.name, mf.GetName())
+				continue
 			}
 			for _, m := range mf.Metric {
 				switch mf.GetType() {

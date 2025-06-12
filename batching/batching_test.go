@@ -109,6 +109,38 @@ func TestBatchingLimit(t *testing.T) {
 	}
 }
 
+func TestBatcherAll(t *testing.T) {
+	batches := Batches{
+		data.STInformer: &Batch{
+			Data: Data{
+				"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+				"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+			},
+		},
+		data.STEtcd: &Batch{
+			Data: Data{
+				"test3": data.MustNewEntry(&corev1.Pod{}, data.STEtcd, data.CTAdd),
+				"test4": data.MustNewEntry(&corev1.Pod{}, data.STEtcd, data.CTAdd),
+			},
+		},
+	}
+
+	for batch := range batches.All() {
+		if batch.SourceType() == data.STUnknown {
+			t.Fatal("TestBatcherAll: batch is nil")
+		}
+		break
+	}
+
+	entries := []data.Entry{}
+	for entry := range batches.All() {
+		entries = append(entries, entry)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("TestBatcherAll: got %d, want 4 entries,", len(entries))
+	}
+}
+
 func TestHandleInput(t *testing.T) {
 	t.Parallel()
 

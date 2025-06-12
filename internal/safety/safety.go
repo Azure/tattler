@@ -89,7 +89,7 @@ func (s *Secrets) scrubber(ctx context.Context, e data.Entry) {
 	case data.OTPod:
 		p, err := e.Pod()
 		if err != nil {
-			context.Log(ctx).Error(fmt.Sprintf("safety.Secrets.informerRouter: error casting object tyep OTPod to pod: %v", err))
+			context.Log(ctx).Error(fmt.Sprintf("safety.Secrets.informerRouter: error casting object type OTPod to pod: %v", err))
 			return
 		}
 		s.scrubPod(p)
