@@ -288,7 +288,7 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt R
 	spanWatchers := rtMap[rt](ctx)
 
 	if err := r.watch(ctx, rt, spanWatchers); err != nil {
-		return fmt.Errorf("error starting namespace watcher: %v", err)
+		return fmt.Errorf("error starting %s watcher: %v", rt, err)
 	}
 	if ctx.Err() != nil {
 		return fmt.Errorf("error starting namespace watcher: could not connect to server in time")

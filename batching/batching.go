@@ -36,63 +36,55 @@ Usage is pretty simple:
 package batching
 
 import (
-	"context"
 	"errors"
 	"iter"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/Azure/tattler/data"
 	metrics "github.com/Azure/tattler/internal/metrics/batching"
+	"github.com/gostdlib/base/concurrency/sync"
+	"github.com/gostdlib/base/context"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
 var (
-	batchesPool = sync.Pool{
-		New: func() any {
-			return &Batches{}
+	batchesPool = sync.NewPool(
+		context.Background(),
+		"batchesPool",
+		func() Batches {
+			return Batches{}
 		},
-	}
-	batchPool = sync.Pool{
-		New: func() any {
-			return &Batch{}
+	)
+	batchPool = sync.NewPool(
+		context.Background(),
+		"batchPool",
+		func() *Batch {
+			b := Batch{Data: Data{}}
+			return &b
 		},
-	}
+	)
 )
 
-func putPool(a any) {
-	switch v := a.(type) {
-	case Batches:
-		batchesPool.Put(&v)
-	case Batch:
-		batchPool.Put(&v)
-	}
-}
-
-func getBatches() Batches {
-	return *batchesPool.Get().(*Batches)
-}
-
-func getBatch() Batch {
-	return *batchPool.Get().(*Batch)
-}
+var _ sync.Resetter = Batches{}
+var _ sync.Resetter = &Batch{}
 
 // Batches is a map of entry types to batches.
-type Batches map[data.SourceType]Batch
+type Batches map[data.SourceType]*Batch
 
-// Recyle recycles the batches. It should not be used after this.
+// Recycle returns Batches to a sync.Pool for reuse.
 func (b Batches) Recycle() {
-	for batchesK, batch := range b {
-		for batchK := range batch.Data {
-			delete(batch.Data, batchK)
-		}
-		putPool(batch.Data)
-		delete(b, batchesK)
+	batchesPool.Put(context.Background(), b)
+}
+
+// Reset implements sync.Restter.
+func (b Batches) Reset() {
+	for _, batch := range b {
+		batchPool.Put(context.Background(), batch)
 	}
-	putPool(b)
+	clear(b)
 }
 
 // All returns an iterator over data entries.
@@ -101,7 +93,7 @@ func (b Batches) All() iter.Seq[data.Entry] {
 		for _, batch := range b {
 			for _, d := range batch.Data {
 				if !yield(d) {
-					break
+					return
 				}
 			}
 		}
@@ -123,6 +115,12 @@ type Batch struct {
 	age  time.Time
 }
 
+// Reset implements sync.Resetter.
+func (b *Batch) Reset() {
+	clear(b.Data)
+	b.age = time.Time{}
+}
+
 // Map returns a map to batch data.
 func (b *Batch) Map() map[types.UID]data.Entry {
 	return b.Data.Map()
@@ -132,11 +130,11 @@ func (b *Batch) Map() map[types.UID]data.Entry {
 type Data map[types.UID]data.Entry
 
 // Map returns a map of UIDs to data entries.
-func (b *Data) Map() map[types.UID]data.Entry {
+func (b Data) Map() map[types.UID]data.Entry {
 	if b == nil {
 		return nil
 	}
-	return *b
+	return b
 }
 
 // Batcher is used to ingest data and emit batches.
@@ -192,7 +190,7 @@ func New(ctx context.Context, in <-chan data.Entry, out chan Batches, timespan t
 		out:       out,
 		log:       slog.Default(),
 	}
-	b.current = getBatches()
+	b.current = batchesPool.Get(ctx)
 	b.emitter = b.emit
 
 	for _, o := range options {
@@ -234,7 +232,7 @@ func (b *Batcher) handleInput(ctx context.Context, tick <-chan time.Time) (exit 
 		if !ok {
 			return true, nil
 		}
-		if err := b.handleData(data); err != nil {
+		if err := b.handleData(ctx, data); err != nil {
 			metrics.Error(ctx)
 			return false, err
 		}
@@ -266,7 +264,7 @@ func (b *Batcher) emit(ctx context.Context) {
 		metrics.Emitted(ctx, sourceType, len(batch.Data), time.Since(batch.age))
 	}
 
-	n := getBatches()
+	n := batchesPool.Get(ctx)
 	b.current = n
 	b.out <- batches
 }
@@ -276,10 +274,10 @@ type getMeta interface {
 }
 
 // handleData handles putting the data into the current batch.
-func (b *Batcher) handleData(entry data.Entry) error {
+func (b *Batcher) handleData(ctx context.Context, entry data.Entry) error {
 	batch, ok := b.current[entry.SourceType()]
 	if !ok {
-		batch = getBatch()
+		batch = batchPool.Get(ctx)
 		batch.Data = map[types.UID]data.Entry{}
 		batch.age = time.Now()
 	}

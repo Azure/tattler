@@ -21,17 +21,17 @@ Usage:
 package safety
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 
 	"github.com/Azure/tattler/data"
+	"github.com/gostdlib/base/context"
 
 	corev1 "k8s.io/api/core/v1"
 )
 
 // Secrets provide a set of safety checks for exposing Kubernetes resources to the outside world.
-// It currently scrubs sensitive information from informers that have pods with containers that have
+// It currently scrubs sensitive information from pods with containers that have
 // environment variables with names that match a secret regular expression.
 type Secrets struct {
 	in  <-chan data.Entry
@@ -70,38 +70,38 @@ func New(ctx context.Context, in <-chan data.Entry, out chan data.Entry, options
 		}
 	}
 
-	go s.run()
+	go s.run(ctx)
 	return s, nil
 }
 
 // run starts the Secrets processing.
-func (s *Secrets) run() {
+func (s *Secrets) run(ctx context.Context) {
 	defer close(s.out)
 
 	for e := range s.in {
-		s.scrubber(e)
+		s.scrubber(ctx, e)
 	}
 }
 
 // scrubber scrubs sensitive information from an informer.
-func (s *Secrets) scrubber(e data.Entry) error {
+func (s *Secrets) scrubber(ctx context.Context, e data.Entry) {
 	switch e.ObjectType() {
 	case data.OTPod:
 		p, err := e.Pod()
 		if err != nil {
-			return fmt.Errorf("safety.Secrets.informerRouter: error casting object to pod: %v", err)
+			context.Log(ctx).Error(fmt.Sprintf("safety.Secrets.informerRouter: error casting object type OTPod to pod: %v", err))
+			return
 		}
 		s.scrubPod(p)
 	}
 	s.out <- e
-	return nil
 }
 
 // scrubPod scrubs sensitive information from a pod.
 func (s *Secrets) scrubPod(p *corev1.Pod) {
 	spec := p.Spec
-	for _, cont := range spec.Containers {
-		s.scrubContainer(cont)
+	for i, cont := range spec.Containers {
+		spec.Containers[i] = s.scrubContainer(cont)
 	}
 }
 
@@ -119,9 +119,10 @@ if secretRE.MatchString(ev.Name) {
 var redacted = "REDACTED"
 
 // scrubContainer scrubs sensitive information from a container.
-func (s *Secrets) scrubContainer(c corev1.Container) {
+func (s *Secrets) scrubContainer(c corev1.Container) corev1.Container {
 	for i, ev := range c.Env {
 		ev.Value = redacted
 		c.Env[i] = ev
 	}
+	return c
 }

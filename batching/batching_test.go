@@ -109,6 +109,38 @@ func TestBatchingLimit(t *testing.T) {
 	}
 }
 
+func TestBatcherAll(t *testing.T) {
+	batches := Batches{
+		data.STInformer: &Batch{
+			Data: Data{
+				"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+				"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
+			},
+		},
+		data.STEtcd: &Batch{
+			Data: Data{
+				"test3": data.MustNewEntry(&corev1.Pod{}, data.STEtcd, data.CTAdd),
+				"test4": data.MustNewEntry(&corev1.Pod{}, data.STEtcd, data.CTAdd),
+			},
+		},
+	}
+
+	for batch := range batches.All() {
+		if batch.SourceType() == data.STUnknown {
+			t.Fatal("TestBatcherAll: batch is nil")
+		}
+		break
+	}
+
+	entries := []data.Entry{}
+	for entry := range batches.All() {
+		entries = append(entries, entry)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("TestBatcherAll: got %d, want 4 entries,", len(entries))
+	}
+}
+
 func TestHandleInput(t *testing.T) {
 	t.Parallel()
 
@@ -119,7 +151,7 @@ func TestHandleInput(t *testing.T) {
 		UID: types.UID("test"),
 	}
 
-	batch99 := Batch{Data: map[types.UID]data.Entry{}}
+	batch99 := &Batch{Data: map[types.UID]data.Entry{}}
 	for i := 0; i < 99; i++ {
 		om := v1.ObjectMeta{
 			UID: types.UID("test"),
@@ -168,7 +200,7 @@ func TestHandleInput(t *testing.T) {
 			name: "Successful tick and data to send",
 			in:   func() chan data.Entry { return make(chan data.Entry) },
 			tick: time.After(1 * time.Microsecond),
-			current: Batches{data.STInformer: Batch{
+			current: Batches{data.STInformer: &Batch{
 				Data{
 					types.UID(uuid.New().String()): data.MustNewEntry(&corev1.Pod{ObjectMeta: om}, data.STInformer, data.CTAdd),
 				},
@@ -191,9 +223,8 @@ func TestHandleInput(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		ctx := context.Background()
 		if test.current == nil {
-			test.current = getBatches()
+			test.current = batchesPool.Get(t.Context())
 		}
 		b := &Batcher{
 			in:        test.in(),
@@ -206,7 +237,7 @@ func TestHandleInput(t *testing.T) {
 		}
 		b.emitter = emitter
 
-		gotExit, gotErr := b.handleInput(ctx, test.tick)
+		gotExit, gotErr := b.handleInput(t.Context(), test.tick)
 		switch {
 		case gotErr != nil && !test.wantErr:
 			t.Errorf("TestHandleInput(%s): got err == %v, want err == nil", test.name, gotErr)
@@ -232,7 +263,7 @@ func TestEmit(t *testing.T) {
 	t.Parallel()
 
 	batches := Batches{
-		data.STInformer: Batch{
+		data.STInformer: &Batch{
 			Data{
 				"test": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
 			},
@@ -290,7 +321,7 @@ func TestHandleData(t *testing.T) {
 			current: make(Batches),
 		}
 
-		err := b.handleData(test.data)
+		err := b.handleData(t.Context(), test.data)
 		switch {
 		case err != nil && !test.wantErr:
 			t.Errorf("TestHandleData(%s): got error %v, want %v", test.name, err, test.wantErr)
@@ -313,7 +344,7 @@ func TestRecycle(t *testing.T) {
 	t.Parallel()
 
 	batches := Batches{
-		data.STInformer: Batch{
+		data.STInformer: &Batch{
 			Data{
 				"test":  data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
 				"test2": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
@@ -324,12 +355,11 @@ func TestRecycle(t *testing.T) {
 
 	batches.Recycle()
 
-	// If we put the wrong data in the wrong pool, these will panic.
-	bs := getBatches()
+	bs := batchesPool.Get(t.Context())
 	if diff := pretty.Compare(Batches{}, bs); diff != "" {
 		t.Errorf("TestRecycle: -want/+got:\n%s", diff)
 	}
-	b := getBatch()
+	b := batchPool.Get(t.Context())
 	if diff := pretty.Compare(Batch{}, b); diff != "" {
 		t.Errorf("TestRecycle: -want/+got:\n%s", diff)
 	}
@@ -346,7 +376,7 @@ func TestAll(t *testing.T) {
 		{
 			name: "one entry in one batch",
 			batches: Batches{
-				data.STInformer: Batch{
+				data.STInformer: &Batch{
 					Data{
 						"test": data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTAdd),
 					},
@@ -358,7 +388,7 @@ func TestAll(t *testing.T) {
 		{
 			name: "multiple entries in one batch",
 			batches: Batches{
-				data.STInformer: Batch{
+				data.STInformer: &Batch{
 					Data{
 						"test":  data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a"}}, data.STInformer, data.CTAdd),
 						"test2": data.MustNewEntry(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b"}}, data.STInformer, data.CTUpdate),
@@ -400,23 +430,5 @@ func TestAll(t *testing.T) {
 		if diff := pretty.Compare(test.want, entries); diff != "" {
 			t.Errorf("TestAll: .current: -want/+got:\n%s", diff)
 		}
-	}
-}
-
-func TestGetBatches(t *testing.T) {
-	t.Parallel()
-
-	b := getBatches()
-	if diff := pretty.Compare(Batches{}, b); diff != "" {
-		t.Errorf("TestGetBatches: -want/+got:\n%s", diff)
-	}
-}
-
-func TestGetBatch(t *testing.T) {
-	t.Parallel()
-
-	b := getBatch()
-	if diff := pretty.Compare(Batch{}, b); diff != "" {
-		t.Errorf("TestGetBatch: -want/+got:\n%s", diff)
 	}
 }
