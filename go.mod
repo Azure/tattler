@@ -9,6 +9,7 @@ require (
 	github.com/gostdlib/base v0.0.0-20250609190732-4cf364d5a0c7
 	github.com/gostdlib/concurrency v0.0.0-20241230205952-55ea9e292314
 	github.com/prometheus/client_golang v1.22.0
+	github.com/prometheus/client_model v0.6.2
 	go.opentelemetry.io/otel/exporters/prometheus v0.57.0
 	go.opentelemetry.io/otel/metric v1.35.0
 	go.opentelemetry.io/otel/sdk v1.35.0
@@ -27,7 +28,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.8.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/gofiber/fiber/v2 v2.52.6 // indirect
+	github.com/gofiber/fiber/v2 v2.52.7 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.26.3 // indirect
 	github.com/jedib0t/go-pretty/v6 v6.6.7 // indirect
@@ -38,7 +39,6 @@ require (
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.63.0 // indirect
 	github.com/prometheus/procfs v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
