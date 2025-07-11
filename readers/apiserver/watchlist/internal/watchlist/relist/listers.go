@@ -80,17 +80,15 @@ func listToEntries(listResult runtime.Object) ([]data.Entry, error) {
 			}
 
 			// For value types, we need to take their address
-			if item.CanAddr() {
-				itemPtr := item.Addr()
-				if itemPtr.CanInterface() {
-					if obj, ok := itemPtr.Interface().(runtime.Object); ok {
-						events = append(events, data.MustNewEntry(obj, data.STWatchList, data.CTSnapshot))
-					}
-				} else {
-					return nil, fmt.Errorf("listToEntries: item %d in %T is not interfaceable: %w", i, listResult, exponential.ErrPermanent)
-				}
-			} else {
+			if !item.CanAddr() {
 				return nil, fmt.Errorf("listToEntries: item %d in %T is not addressable: %w", i, listResult, exponential.ErrPermanent)
+			}
+			itemPtr := item.Addr()
+			if !itemPtr.CanInterface() {
+				return nil, fmt.Errorf("listToEntries: item %d in %T is not interfaceable: %w", i, listResult, exponential.ErrPermanent)
+			}
+			if obj, ok := itemPtr.Interface().(runtime.Object); ok {
+				events = append(events, data.MustNewEntry(obj, data.STWatchList, data.CTSnapshot))
 			}
 		}
 	}

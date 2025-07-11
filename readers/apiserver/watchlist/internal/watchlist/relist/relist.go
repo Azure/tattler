@@ -26,7 +26,7 @@ type ClientsetInterface interface {
 	RbacV1() rbacv1.RbacV1Interface
 }
 
-// listPage if a function that takes a context and list options and returns a list of data.Entry objects.
+// listPage is a function that takes a context and list options and returns a list of data.Entry objects.
 // You access these via the MakePagers map.
 type listPage func(ctx context.Context, opts metav1.ListOptions) (list []data.Entry, continueToken string, err error)
 
