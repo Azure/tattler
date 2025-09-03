@@ -155,21 +155,12 @@ func TestEventToEntry(t *testing.T) {
 			},
 			want: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTDelete),
 		},
-		{
-			name: "Snapshot event",
-			event: watch.Event{
-				Type:   watch.Added,
-				Object: &corev1.Pod{},
-			},
-			isSnapshot: true,
-			want:       data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTSnapshot),
-		},
 	}
 
 	for _, test := range tests {
 		f := &Filter{}
 
-		got, err := f.eventToEntry(test.event, test.isSnapshot)
+		got, err := f.eventToEntry(test.event)
 		if err != nil {
 			panic(err)
 		}
@@ -188,11 +179,10 @@ func TestSetMapItem(t *testing.T) {
 	// If resourceVersion is not the same, you use generation to determine if the object is newer.
 
 	tests := []struct {
-		name           string
-		event          watch.Event
-		wantCached     bool
-		wantIsSnapshot bool
-		wantIsDeleted  bool
+		name          string
+		event         watch.Event
+		wantCached    bool
+		wantIsDeleted bool
 	}{
 		{
 			name: "Delete event",
@@ -204,9 +194,8 @@ func TestSetMapItem(t *testing.T) {
 					generation:      0,
 				},
 			},
-			wantCached:     false,
-			wantIsSnapshot: false,
-			wantIsDeleted:  true,
+			wantCached:    false,
+			wantIsDeleted: true,
 		},
 		{
 			name: "Item not in cache",
@@ -218,9 +207,8 @@ func TestSetMapItem(t *testing.T) {
 					generation:      0,
 				},
 			},
-			wantCached:     true,
-			wantIsSnapshot: false,
-			wantIsDeleted:  false,
+			wantCached:    true,
+			wantIsDeleted: false,
 		},
 		{
 			name: "Object is older than the cached item",
@@ -232,9 +220,8 @@ func TestSetMapItem(t *testing.T) {
 					generation:      1,        // This is what indicates it is older
 				},
 			},
-			wantCached:     false,
-			wantIsSnapshot: false,
-			wantIsDeleted:  false,
+			wantCached:    false,
+			wantIsDeleted: false,
 		},
 		{
 			name: "Object is equal to the cached item",
@@ -246,8 +233,8 @@ func TestSetMapItem(t *testing.T) {
 					generation:      2,
 				},
 			},
-			wantIsSnapshot: true,
-			wantIsDeleted:  false,
+			wantCached:    true,
+			wantIsDeleted: false,
 		},
 		{
 			name: "Object is newer than the cached item",
@@ -259,9 +246,8 @@ func TestSetMapItem(t *testing.T) {
 					generation:      3,
 				},
 			},
-			wantCached:     true,
-			wantIsSnapshot: false,
-			wantIsDeleted:  false,
+			wantCached:    true,
+			wantIsDeleted: false,
 		},
 	}
 
@@ -281,12 +267,9 @@ func TestSetMapItem(t *testing.T) {
 
 		obj := test.event.Object.(items.Object)
 
-		gotCached, gotIsSnapshot, gotIsDeleted := f.setMapItem(obj, test.event)
+		gotCached, gotIsDeleted := f.setMapItem(obj, test.event)
 		if gotCached != test.wantCached {
 			t.Errorf("TestSetMapItem(%s): got cached %t, want %t", test.name, gotCached, test.wantCached)
-		}
-		if gotIsSnapshot != test.wantIsSnapshot {
-			t.Errorf("TestSetMapItem(%s): got isSnapshot %t, want %t", test.name, gotIsSnapshot, test.wantIsSnapshot)
 		}
 		if gotIsDeleted != test.wantIsDeleted {
 			t.Errorf("TestSetMapItem(%s): got isDeleted %t, want %t", test.name, gotIsDeleted, test.wantIsDeleted)
@@ -297,5 +280,6 @@ func TestSetMapItem(t *testing.T) {
 				t.Errorf("TestSetMapItem(%s): item not deleted", test.name)
 			}
 		}
+
 	}
 }

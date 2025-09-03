@@ -13,7 +13,6 @@ package tattler
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -54,7 +53,6 @@ type Runner struct {
 	readers       []Reader
 	preProcessors []PreProcessor
 
-	logger        *slog.Logger
 	meterProvider metric.MeterProvider
 
 	mu      sync.Mutex
@@ -63,19 +61,6 @@ type Runner struct {
 
 // Option is an option for New().
 type Option func(*Runner) error
-
-// WithLogger sets the logger. Defaults to slog.Default().
-// You will not need to also use WithBatcherOptions(batching.WithLogger()), as this
-// will automatically set to the same logger.
-func WithLogger(l *slog.Logger) Option {
-	return func(r *Runner) error {
-		if l == nil {
-			return fmt.Errorf("logger cannot be nil")
-		}
-		r.logger = l
-		return nil
-	}
-}
 
 // WithPreProcessor appends PreProcessors to the Runner.
 func WithPreProcessor(p ...PreProcessor) Option {
@@ -114,8 +99,7 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 	}
 
 	r := &Runner{
-		input:  in,
-		logger: slog.Default(),
+		input: in,
 	}
 
 	for _, o := range options {
@@ -123,7 +107,6 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 			return nil, err
 		}
 	}
-	r.batchOpts = append(r.batchOpts, batching.WithLogger(r.logger))
 
 	if batchTimespan <= 0 {
 		return nil, fmt.Errorf("batchTimespan must be greater than 0")
@@ -136,7 +119,7 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 
 	if r.preProcessors != nil {
 		secretsIn = make(chan data.Entry, 1)
-		_, err := preprocess.New(ctx, in, secretsIn, r.preProcessors, preprocess.WithLogger(r.logger))
+		_, err := preprocess.New(ctx, in, secretsIn, r.preProcessors)
 		if err != nil {
 			return nil, err
 		}
@@ -152,7 +135,7 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 		}
 	}
 
-	secrets, err := safety.New(ctx, secretsIn, batchingIn, safety.WithLogger(r.logger))
+	secrets, err := safety.New(ctx, secretsIn, batchingIn)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +145,7 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 		return nil, err
 	}
 
-	router, err := routing.New(ctx, routerIn, routing.WithLogger(r.logger))
+	router, err := routing.New(ctx, routerIn)
 	if err != nil {
 		return nil, err
 	}

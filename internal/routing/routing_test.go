@@ -50,9 +50,6 @@ func TestNew(t *testing.T) {
 			t.Errorf("TestNew(%s): should have set .routes, but did not", test.name)
 			continue
 		}
-		if b.log == nil {
-			t.Errorf("TestNew(%s): should have set .log, but did not", test.name)
-		}
 	}
 
 }

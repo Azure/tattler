@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Azure/tattler/data"
-	"github.com/Azure/tattler/readers/apiserver/watchlist/internal/types"
+	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/retry/exponential"
 	"github.com/gostdlib/base/values/generics/promises"

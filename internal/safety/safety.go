@@ -22,7 +22,6 @@ package safety
 
 import (
 	"fmt"
-	"log/slog"
 
 	"github.com/Azure/tattler/data"
 	"github.com/gostdlib/base/context"
@@ -36,20 +35,10 @@ import (
 type Secrets struct {
 	in  <-chan data.Entry
 	out chan data.Entry
-
-	log *slog.Logger
 }
 
 // Option is a functional option for the Secrets.
 type Option func(*Secrets) error
-
-// WithLogger sets the logger for the Secrets. Defaults to slog.Default().
-func WithLogger(l *slog.Logger) Option {
-	return func(s *Secrets) error {
-		s.log = l
-		return nil
-	}
-}
 
 // New creates a new Secrets. The pipeline is ready once New() is called successfully.
 // Closing in will close out.
@@ -61,7 +50,6 @@ func New(ctx context.Context, in <-chan data.Entry, out chan data.Entry, options
 	s := &Secrets{
 		in:  in,
 		out: out,
-		log: slog.Default(),
 	}
 
 	for _, o := range options {
