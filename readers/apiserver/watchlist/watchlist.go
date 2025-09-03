@@ -1,137 +1,177 @@
-/*
-Package watchlist provides a reader for the APIServer watchlist API.
-
-The watchlist API provides all request objects on the APIServer and streams changes to those objects
-as they are made. This is signficantly more efficient that the informer API, which using a bad
-caching implementation to cache all the objects.
-
-In addition, this provides a reslist option that can be used to time out the current reader and
-create a new on underneath to refresh the view of the APIServer in case any updates were missed.
-*/
 package watchlist
 
-// Note:  this package sits on top of the real reader package, but handles creating and deleting
-// those reader objects whenever we need to refresh the full view of the APIServer.
-
 import (
-	"context"
+	"errors"
 	"fmt"
-	"log/slog"
-	"sync"
+	"io"
+	"math/rand/v2"
+	"strings"
 	"time"
 
-	"github.com/Azure/retry/exponential"
 	"github.com/Azure/tattler/data"
-	reader "github.com/Azure/tattler/readers/apiserver/watchlist/internal/watchlist"
+	"github.com/Azure/tattler/internal/filter/types/watchlist"
+	filter "github.com/Azure/tattler/internal/filter/types/watchlist"
+	metrics "github.com/Azure/tattler/internal/metrics/readers"
+	"github.com/Azure/tattler/readers/apiserver/watchlist/relist"
+	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
+	"github.com/gostdlib/base/concurrency/sync"
+	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/retry/exponential"
+	"github.com/gostdlib/base/values/generics/promises"
+	"github.com/gostdlib/base/values/generics/sets"
 
+	"go.opentelemetry.io/otel/metric"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8Types "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 )
 
-type watchReader interface {
-	Logger() *slog.Logger
-	Close(ctx context.Context) error
-	SetOut(ctx context.Context, out chan data.Entry) error
-	Run(ctx context.Context) (err error)
-	Relist() time.Duration
+var back = exponential.Must(exponential.New())
+
+// lister defines the interface for relisting resources
+type lister interface {
+	List(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error)
 }
 
 // Reader reports changes made to data objects on the APIServer via the watchlist API.
 type Reader struct {
-	mu sync.Mutex // guards r
-	r  watchReader
-	// ch is the output channel for data to flow out on. It is set by .SetOut().
-	ch chan data.Entry
+	clientset     kubernetes.Interface
+	retrieveTypes types.Retrieve
+	filter        *watchlist.Filter
+	filterIn      chan watch.Event
+	filterOpts    []watchlist.Option
+	// relistInterval indicates how often we should relist all the objects in the APIServer.
+	// The default is never. The minimum is 1 hour and the maximum is 7 days.
+	// This can only be set via a Constructor option.
+	relistInterval time.Duration
+	relister       lister
 
-	// newReader is a function that creates a new reader object using the
-	// same configuration as the original reader.
-	newReader func() (watchReader, error)
+	ch            chan data.Entry
+	waitWatchers  sync.Group
+	cancelWatches context.CancelFunc
+	started       bool
+	meterProvider metric.MeterProvider
 
-	logger *slog.Logger
+	// List functions for each resource type
+	listFunctions map[types.Retrieve][]spawnLister
 
 	closeCh chan struct{}
+	mu      sync.Mutex
 
+	// For testing.
+	fakeWatch              func(context.Context, types.Retrieve, []spawnWatcher) error
+	fakeWatchEvents        func(context.Context, watch.Interface) (string, error)
 	testHandleClientSwitch func()
-	testClientSwitchRetry  func()
+	testPerformRelist      func()
 }
 
 // Option is an option for New(). Unused for now.
-type Option = reader.Option
-
-// WithLogger sets the logger for the Changes object.
-func WithLogger(log *slog.Logger) Option {
-	return reader.WithLogger(log)
-}
+type Option func(*Reader) error
 
 // WithFilterSize sets the initial size of the filter map.
 func WithFilterSize(size int) Option {
-	return reader.WithFilterSize(size)
+	return func(c *Reader) error {
+		c.filterOpts = append(c.filterOpts, watchlist.WithSized(size))
+		return nil
+	}
 }
 
-// WithRelist will set a duration in which we will relist all the objects in the APIServer.
+// WithRelist will set a duration in which we will relist all the objects in the APIServer using List() API calls.
 // This is useful to prevent split brain scenarios where the APIServer and tattler have
-// different views of the world. The default is never. The minimum is 1 hour and the maximum is 7 days.
+// different views of the world. All objects returned by List() are marked as snapshots.
+// The default is never. The minimum is 1 hour and the maximum is 7 days.
 func WithRelist(d time.Duration) Option {
-	return reader.WithRelist(d)
+	return func(c *Reader) error {
+		if d < 1*time.Hour {
+			return errors.New("relist duration must be at least 1 hour")
+		}
+		if d > 7*24*time.Hour {
+			return errors.New("relist duration must be less than 7 days")
+		}
+		c.relistInterval = d
+		return nil
+	}
 }
 
-// RetrieveType is the type of data to retrieve. Uses as a bitwise flag.
-// So, like: RTNode | RTPod, or RTNode, or RTPod.
-type RetrieveType = reader.RetrieveType
+// rtMap is a dynamically created map of RetrieveType.
+var rtMap = map[types.Retrieve]func(ctx context.Context) []spawnWatcher{}
+var rtMapOnce sync.Once
 
-const (
-	// RTNode retrieves node data.
-	RTNode = reader.RTNode
-	// RTPod retrieves pod data.
-	RTPod = reader.RTPod
-	// RTNamespace retrieves namespace data.
-	RTNamespace = reader.RTNamespace
-	// RTPersistentVolume retrieves persistent volume data.
-	RTPersistentVolume = reader.RTPersistentVolume
-	// RTRBAC retrieves RBAC data. This includes all namespaced roles and cluster roles plus
-	// all role bindings and cluster role bindings.
-	RTRBAC = reader.RTRBAC
-	// RTService retrieves service data.
-	RTService = reader.RTService
-	// RTDeployment retrieves deployment data.
-	RTDeployment = reader.RTDeployment
-	// RTIngressController retrieves ingress controller data.
-	RTIngressController = reader.RTIngressController
-	// RTEndpoints retrieves endpoints data.
-	RTEndpoint = reader.RTEndpoint
-)
+func init() {
+	var i uint32 = 0
+
+	for {
+		rt := types.Retrieve(1 << i)
+		if strings.HasPrefix(rt.String(), "Retrieve(") {
+			break
+		}
+		rtMap[rt] = nil
+		i++
+	}
+}
 
 // New creates a new Reader object. retrieveTypes is a bitwise flag to determine what data to retrieve.
-func New(ctx context.Context, clientset *kubernetes.Clientset, retrieveTypes RetrieveType, opts ...Option) (*Reader, error) {
-	r, err := reader.New(ctx, clientset, retrieveTypes, opts...)
+func New(ctx context.Context, clientset kubernetes.Interface, retrieveTypes types.Retrieve, opts ...Option) (*Reader, error) {
+	if clientset == nil {
+		return nil, fmt.Errorf("clientset is nil")
+	}
+
+	relister, err := relist.New(clientset)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error creating relister: %v", err)
 	}
 
-	newReader := func() (watchReader, error) {
-		return reader.New(ctx, clientset, retrieveTypes, opts...)
+	r := &Reader{
+		clientset:      clientset,
+		retrieveTypes:  retrieveTypes,
+		relistInterval: -1, // This indicates never.
+		relister:       relister,
+		closeCh:        make(chan struct{}),
 	}
 
-	return &Reader{
-		r:         r,
-		closeCh:   make(chan struct{}),
-		newReader: newReader,
-		logger:    r.Logger(),
-	}, nil
+	for _, opt := range opts {
+		if err := opt(r); err != nil {
+			return nil, err
+		}
+	}
+
+	// Make sure they passed a valid retrieveTypes.
+	found := false
+	for rt := range rtMap {
+		if retrieveTypes&rt == rt {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("no data types to retrieve")
+	}
+
+	return r, nil
 }
 
-// Close closes the Reader. This will stop all watchers and close the output channel.
+// Close closes the Reader. This will stop all watchers, but does not close the output channel.
 func (r *Reader) Close(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	close(r.closeCh)
-	defer func() {
-		if r.ch != nil {
-			close(r.ch)
-		}
-	}()
+	return r.close(ctx)
+}
 
-	return r.r.Close(ctx)
+func (r *Reader) close(ctx context.Context) error {
+	if !r.started {
+		return fmt.Errorf("cannot call Close before Run is called")
+	}
+
+	close(r.closeCh)
+
+	r.cancelWatches()
+
+	_ = r.waitWatchers.Wait(ctx)
+	close(r.filterIn)
+	return nil
 }
 
 // SetOut sets the output channel for data to flow out on.
@@ -139,113 +179,462 @@ func (r *Reader) SetOut(ctx context.Context, out chan data.Entry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if err := r.r.SetOut(ctx, out); err != nil {
-		return err
+	if r.started {
+		return fmt.Errorf("cannot call SetOut once the Reader has had Start() called")
 	}
 	r.ch = out
 	return nil
 }
 
+// spawnWatcher is a function that creates a watcher for a resource.
+type spawnWatcher func(options metav1.ListOptions) (watch.Interface, error)
+
+// spawnLister is a function that creates a lister for a resource.
+type spawnLister func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error)
+
 // Run starts the Reader. This will start all watchers and begin sending data to the output channel.
-func (r *Reader) Run(ctx context.Context) error {
+func (r *Reader) Run(ctx context.Context) (err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if err := r.r.Run(ctx); err != nil {
-		return err
+	if r.started {
+		return fmt.Errorf("cannot call Run once the Reader has already started")
 	}
-	r.handleClientSwitch()
+	if r.ch == nil {
+		return fmt.Errorf("cannot call Run if SetOut has not been called(%v)", r.ch)
+	}
+
+	defer func() {
+		if err != nil {
+			r.close(ctx)
+		}
+	}()
+
+	if err := r.setupFilter(ctx); err != nil {
+		return fmt.Errorf("error setting up cache: %v", err)
+	}
+
+	ctx, r.cancelWatches = context.WithCancel(context.WithoutCancel(ctx))
+
+	for rt := range rtMap {
+		if r.retrieveTypes&rt == rt {
+			if err := r.startWatch(ctx, r.cancelWatches, rt); err != nil {
+				if errors.Is(err, context.Canceled) {
+					err = fmt.Errorf("could not connect to server by deadline")
+				}
+				return fmt.Errorf("error starting %s watcher: %v", rt.String(), err)
+			}
+		}
+	}
+
+	r.relistTask(ctx)
+	r.started = true
 	return nil
 }
 
-// handleClientSwitch will handle the client switch logic if the relist option is set.
-// This will create a new reader object and close the old one.
-// If the Relist is <= 0, this function will return immediately.
-func (r *Reader) handleClientSwitch() {
+// startWatch starts a watcher for a resource type. This will return an error if the watcher could not
+// be started. If the context is canceled, this will return an error.
+// This is a funky thing because if the cluster is not working, a call to Watch() will hang indefinitely.
+// If you pass a context to Watch(), if it connects it will error when the context is canceled.
+// So, we have to watch for a bit in another goroutine and then cancel the context if it doesn't connect.
+func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt types.Retrieve) error {
+	finished := make(chan struct{})
+	timer := time.After(30 * time.Second)
+
+	go func() {
+		select {
+		case <-finished:
+		case <-timer:
+			cancel()
+		}
+	}()
+
+	var spanWatchers []spawnWatcher
+	switch rt {
+	case types.RTNamespace:
+		spanWatchers = r.createNamespaceWatcher(ctx)
+	case types.RTNode:
+		spanWatchers = r.createNodesWatcher(ctx)
+	case types.RTPod:
+		spanWatchers = r.createPodsWatcher(ctx)
+	case types.RTPersistentVolume:
+		spanWatchers = r.createPersistentVolumesWatcher(ctx)
+	case types.RTRBAC:
+		spanWatchers = r.createRBACWatcher(ctx)
+	case types.RTService:
+		spanWatchers = r.createServicesWatcher(ctx)
+	case types.RTDeployment:
+		spanWatchers = r.createDeploymentsWatcher(ctx)
+	case types.RTIngressController:
+		spanWatchers = r.createIngressesWatcher(ctx)
+	case types.RTEndpoint:
+		spanWatchers = r.createEndpointsWatcher(ctx)
+	default:
+		return fmt.Errorf("unknown resource type: %v", rt)
+	}
+
+	if err := r.watch(ctx, rt, spanWatchers); err != nil {
+		return fmt.Errorf("error starting %s watcher: %v", rt, err)
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("error starting namespace watcher: could not connect to server in time")
+	}
+	close(finished)
+	return ctx.Err()
+}
+
+func (r *Reader) createNamespaceWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().Namespaces().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createNodesWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().Nodes().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createPodsWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+
+			wi, err := r.clientset.CoreV1().Pods(metav1.NamespaceAll).Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createPersistentVolumesWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().PersistentVolumes().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createRBACWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.RbacV1().Roles(metav1.NamespaceAll).Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.RbacV1().RoleBindings(metav1.NamespaceAll).Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.RbacV1().ClusterRoles().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.RbacV1().ClusterRoleBindings().Watch(ctx, options)
+			if err != nil {
+				return nil, err
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createServicesWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().Services(metav1.NamespaceAll).Watch(ctx, options)
+			if err != nil {
+				panic(err.Error())
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createDeploymentsWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.AppsV1().Deployments(metav1.NamespaceAll).Watch(ctx, options)
+			if err != nil {
+				panic(err.Error())
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createIngressesWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.NetworkingV1().Ingresses(metav1.NamespaceAll).Watch(ctx, options)
+			if err != nil {
+				panic(err.Error())
+			}
+			return wi, nil
+		},
+	}
+}
+
+func (r *Reader) createEndpointsWatcher(ctx context.Context) []spawnWatcher {
+	return []spawnWatcher{
+		func(options metav1.ListOptions) (watch.Interface, error) {
+			wi, err := r.clientset.CoreV1().Endpoints(metav1.NamespaceAll).Watch(ctx, options)
+			if err != nil {
+				panic(err.Error())
+			}
+			return wi, nil
+		},
+	}
+}
+
+// setupFilter sets up the filter cache for the Reader.
+func (r *Reader) setupFilter(ctx context.Context) error {
+	r.filterIn = make(chan watch.Event, 1)
+
+	var err error
+	r.filter, err = filter.New(ctx, r.filterIn, r.ch, r.filterOpts...)
+	if err != nil {
+		return fmt.Errorf("error creating cache: %v", err)
+	}
+	return nil
+}
+
+// watch watches a resource and sends the events to the cache. If this returns
+// an error, the initial watcher could not be created. This will return nil
+// if the initial watcher is created, but underlying calls go on in a goroutine.
+// This will handle automatic reconnection.
+func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+	if r.fakeWatch != nil {
+		return r.fakeWatch(ctx, rt, spawnWatchers)
+	}
+
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	var rv string
+	options := metav1.ListOptions{
+		ResourceVersion: rv,
+		Watch:           true,
+	}
+
+	var err error
+	watchers := make([]watch.Interface, len(spawnWatchers))
+	defer func() {
+		if err != nil {
+			for _, watcher := range watchers {
+				if watcher != nil {
+					watcher.Stop()
+				}
+			}
+		}
+	}()
+	for i := 0; i < len(spawnWatchers); i++ {
+		var watcher watch.Interface
+		watcher, err = spawnWatchers[i](options)
+		if err != nil {
+			return fmt.Errorf("error creating %v watcher: %v", rt, err)
+		}
+		watchers[i] = watcher
+	}
+
+	for i, watcher := range watchers {
+		r.waitWatchers.Go(ctx, func(ctx context.Context) error {
+			for {
+				// This blocks until watchEvents returns, which is when a watcher is closed.
+				var err error
+				_, err = r.watchEvents(ctx, watcher)
+				if err != nil {
+					context.Log(ctx).Error(fmt.Sprintf("error watching %v events: %v", rt, err))
+				}
+				// This would indicate that the watcher was intentionally closed.
+				if ctx.Err() != nil {
+					return nil
+				}
+
+				// Since it was not intentionally closed, we should try to reconnect.
+				watcher, err = spawnWatchers[i](options)
+				if err != nil {
+					context.Log(ctx).Error(fmt.Sprintf("error re-creating %v watcher: %v", rt, err))
+				}
+				time.Sleep(time.Duration(1+rand.IntN(10)) * time.Second)
+			}
+		})
+	}
+
+	return nil
+}
+
+// watchEvents watches the events from a watcher and sends them to the cache.
+// This is subbed in for .watchEvents in the Reader struct.
+// If the watcher can emit bookmarks, the string returned will be the resource version.
+// This blocks until the watcher is closed.
+func (r *Reader) watchEvents(ctx context.Context, watcher watch.Interface) (string, error) {
+	if r.fakeWatchEvents != nil {
+		return r.fakeWatchEvents(ctx, watcher)
+	}
+
+	ch := watcher.ResultChan()
+
+	var resourceVersion string
+
+	stopper := sync.OnceFunc(
+		func() {
+			watcher.Stop()
+		},
+	)
+
+	for {
+		rv, err := r.watchEvent(ctx, ch, stopper)
+		if rv != "" {
+			resourceVersion = rv
+		}
+		// Always an io.EOF, so we don't log it, we just exit.
+		if err != nil {
+			break
+		}
+	}
+
+	return resourceVersion, nil
+}
+
+// watchEvent watches a single event from a watcher and sends it to the cache. If the event
+// is a bookmark, the resource version is returned. If the context is canceled or the input channel
+// is closed, io.EOF is returned. If it is a watch.Error, the error is logged and nil is returned.
+func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper func()) (string, error) {
+	select {
+	case <-ctx.Done():
+		stopper()
+		return "", io.EOF
+	case event, ok := <-ch:
+		if !ok {
+			stopper()
+			return "", io.EOF
+		}
+		metrics.WatchEvent(ctx, event)
+		switch event.Type {
+		case watch.Bookmark:
+			return event.Object.(metav1.Object).GetResourceVersion(), nil
+		case watch.Error:
+			context.Log(ctx).Error(fmt.Sprintf("Watch Error: %v", event.Object))
+			return "", nil
+		}
+		r.filterIn <- event
+	}
+
+	return "", nil
+}
+
+// relistTask will spin off a goroutine that waits for the timer to expire or the close channel to be closed.
+// If the close channel closes, this function will return.
+// If the timer expires, this function will perform a relist operation and reset the timer.
+func (r *Reader) relistTask(ctx context.Context) {
 	if r.testHandleClientSwitch != nil {
 		r.testHandleClientSwitch()
 		return
 	}
 
-	go func() {
-		if r.r.Relist() <= 0 {
-			return
-		}
-
-		t := time.NewTimer(r.r.Relist())
-		defer t.Stop()
-
-		for {
-			if exit := r.switchWait(t); exit {
-				return
-			}
-		}
-	}()
-}
-
-// switchWait will wait for the timer to expire or the close channel to close.
-// If the close channel closes, this function will return true.
-// If the timer expires, this function will switch the client and reset the timer.
-func (r *Reader) switchWait(t *time.Timer) (exit bool) {
-	select {
-	case <-r.closeCh:
-		return true
-	case <-t.C:
-		r.clientSwitchRetry()
-		resetTimer(r.r.Relist(), t)
-		return false
-	}
-}
-
-// clientSwitchRetry will create a new reader object and close the old one. If there is
-// an error creating the new reader, it will retry until it is successful or Close() is called.
-func (r *Reader) clientSwitchRetry() {
-	if r.testClientSwitchRetry != nil {
-		r.testClientSwitchRetry()
+	if r.relistInterval <= 0 {
 		return
 	}
 
-	boff, _ := exponential.New() // nolint:errcheck // Can't error on default
-	boff.Retry(                  // nolint:errcheck // We don't care about the error here.
-		context.Background(),
-		r.clientSwitch,
+	t := time.NewTimer(r.relistInterval)
+
+	context.Tasks(ctx).Once(
+		ctx,
+		"reslitTask",
+		func(context.Context) error {
+			for {
+				select {
+				case <-r.closeCh:
+					return nil
+				case <-t.C:
+					if r.testPerformRelist != nil {
+						r.testPerformRelist()
+					}
+
+					if err := r.performRelist(ctx); err != nil {
+						context.Log(ctx).Error(fmt.Sprintf("error performing relist: %v", err))
+					}
+					t.Reset(r.relistInterval)
+				}
+			}
+		},
 	)
 }
 
-// clientSwitch will create a new reader object and close the old one.
-func (r *Reader) clientSwitch(ctx context.Context, rec exponential.Record) error {
-	select {
-	case <-r.closeCh:
-		return nil
-	default:
-	}
+// performRelist performs a relist operation by calling List() for all active resource types. This handles all
+// exponential backoff and retries. If the context is canceled, this will return an error.
+func (r *Reader) performRelist(ctx context.Context) error {
+	for rt := range rtMap {
+		if r.retrieveTypes&rt == rt {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			var ch chan promises.Response[data.Entry]
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+			err := back.Retry(
+				ctx,
+				func(ctx context.Context, _ exponential.Record) error {
+					seen := sets.Set[k8Types.UID]{}
 
-	newReader, err := r.newReader()
-	if err != nil {
-		return err
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					var err error
+					ch, err = r.relister.List(ctx, rt)
+					if err != nil {
+						context.Log(ctx).Error(fmt.Sprintf("relister.List had supported type error: %s", err.Error()))
+						return err
+					}
+					for entry := range ch {
+						if entry.Err != nil {
+							return err
+						}
+						if seen.Contains(entry.V.UID()) {
+							continue
+						}
+						seen.Add(entry.V.UID())
+						select {
+						case <-ctx.Done():
+							return fmt.Errorf("relist context canceled: %w", ctx.Err())
+						case r.ch <- entry.V:
+						}
+					}
+					return err
+				},
+				exponential.WithMaxAttempts(7),
+			)
+			if err != nil {
+				context.Log(ctx).Error(fmt.Sprintf("relister.List(%T) had persistent errors: %s", rt, err.Error()))
+			}
+		}
 	}
-
-	if err := newReader.SetOut(context.Background(), r.ch); err != nil {
-		return fmt.Errorf("bug: could not call SetOut() on new watchlist reader: %w", err)
-	}
-	if err := newReader.Run(context.Background()); err != nil {
-		return err
-	}
-	if err := r.r.Close(context.Background()); err != nil {
-		r.logger.Warn(fmt.Sprintf("could not close old watchlist reader: %v", err))
-	}
-	r.r = newReader
 	return nil
-}
-
-// resetTimer resets the timer t to d. If the timer has already fired, it will drain the channel.
-func resetTimer(d time.Duration, t *time.Timer) {
-	select {
-	case <-t.C:
-	default:
-	}
-	t.Reset(d)
 }

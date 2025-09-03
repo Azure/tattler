@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
-	"github.com/Azure/tattler/readers/apiserver/watchlist/internal/types"
+	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/retry/exponential"
 	corev1 "k8s.io/api/core/v1"

@@ -58,7 +58,7 @@ func listToEntries(listResult runtime.Object) ([]data.Entry, error) {
 
 	// Use reflection to extract Items field from any List type (PodList, NodeList, etc.)
 	listValue := reflect.ValueOf(listResult)
-	if listValue.Kind() == reflect.Ptr {
+	if listValue.Kind() == reflect.Pointer {
 		listValue = listValue.Elem()
 	}
 

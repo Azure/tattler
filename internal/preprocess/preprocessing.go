@@ -7,8 +7,6 @@ package preprocess
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 
 	"github.com/Azure/tattler/data"
 )
@@ -21,23 +19,10 @@ type Processor func(context.Context, data.Entry) error
 type Runner struct {
 	in, out chan data.Entry
 	procs   []Processor
-
-	log *slog.Logger
 }
 
 // Option is an option for New().
 type Option func(*Runner) error
-
-// WithLogger sets the logger. Defaults to slog.Default().
-func WithLogger(l *slog.Logger) Option {
-	return func(r *Runner) error {
-		if l == nil {
-			return fmt.Errorf("logger cannot be nil")
-		}
-		r.log = l
-		return nil
-	}
-}
 
 // New creates a new Runner. A runner can be stopped by closing the input channel.
 func New(ctx context.Context, in, out chan data.Entry, procs []Processor, options ...Option) (*Runner, error) {
@@ -45,7 +30,6 @@ func New(ctx context.Context, in, out chan data.Entry, procs []Processor, option
 		in:    in,
 		out:   out,
 		procs: procs,
-		log:   slog.Default(),
 	}
 
 	for _, o := range options {

@@ -38,7 +38,6 @@ package batching
 import (
 	"errors"
 	"iter"
-	"log/slog"
 	"time"
 
 	"github.com/Azure/tattler/data"
@@ -147,20 +146,10 @@ type Batcher struct {
 	out chan Batches
 
 	emitter func(context.Context)
-
-	log *slog.Logger
 }
 
 // Option is a opional argument for New().
 type Option func(*Batcher) error
-
-// WithLogger sets the logger.
-func WithLogger(log *slog.Logger) Option {
-	return func(b *Batcher) error {
-		b.log = log
-		return nil
-	}
-}
 
 // WithBatchSize sets the batch size at which to emit at. So if you set this to 1000, it will
 // emit when it has 1000 items in the batch if we haven't hit the timespan. If the timespan
@@ -188,7 +177,6 @@ func New(ctx context.Context, in <-chan data.Entry, out chan Batches, timespan t
 		batchSize: 1000,
 		in:        in,
 		out:       out,
-		log:       slog.Default(),
 	}
 	b.current = batchesPool.Get(ctx)
 	b.emitter = b.emit
@@ -217,7 +205,7 @@ func (b *Batcher) run(ctx context.Context) {
 
 		exit, err := b.handleInput(context.WithoutCancel(ctx), timer.C)
 		if err != nil {
-			b.log.Error(err.Error())
+			context.Log(ctx).Error(err.Error())
 		}
 		if exit {
 			return
@@ -241,7 +229,7 @@ func (b *Batcher) handleInput(ctx context.Context, tick <-chan time.Time) (exit 
 			if b.current.Len() == b.batchSize {
 				b.emitter(ctx)
 			} else if b.current.Len() > b.batchSize {
-				b.log.Error("Bug: batch size exceeded in Batcher")
+				context.Log(ctx).Error("Bug: batch size exceeded in Batcher")
 				b.emitter(ctx)
 			}
 		}

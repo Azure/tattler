@@ -20,12 +20,12 @@ Usage:
 package routing
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/Azure/tattler/batching"
+	"github.com/gostdlib/base/context"
 
 	"github.com/gostdlib/concurrency/prim/wait"
 )
@@ -42,8 +42,6 @@ type Batches struct {
 	input   chan batching.Batches
 	routes  routes
 	started bool
-
-	log *slog.Logger
 }
 
 // Option is an optional argument to New().
@@ -55,7 +53,6 @@ func WithLogger(l *slog.Logger) Option {
 		if l == nil {
 			return fmt.Errorf("WithLogger does not accept a nil *slog.Logger")
 		}
-		b.log = l
 		return nil
 	}
 }
@@ -69,7 +66,6 @@ func New(ctx context.Context, input chan batching.Batches, options ...Option) (*
 	b := &Batches{
 		input:  input,
 		routes: routes{},
-		log:    slog.Default(),
 	}
 
 	for _, o := range options {
@@ -137,7 +133,7 @@ func (b *Batches) handleInput(ctx context.Context) {
 	for batches := range b.input {
 		for _, r := range b.routes {
 			if err := b.push(ctx, r, batches); err != nil {
-				b.log.Error(err.Error())
+				context.Log(ctx).Error(err.Error())
 			}
 		}
 	}
