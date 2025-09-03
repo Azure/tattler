@@ -103,7 +103,7 @@ Now create a new method that will create a watcher for the new type.
 func (r *Reader) createDeploymentsWatcher(ctx context.Context) []spawnWatcher {
 	return []spawnWatcher{
 		func(options metav1.ListOptions) (watch.Interface, error) {
-			wi, err := r.clientset.AppsV1().Deployments("").Watch(ctx, options)
+			wi, err := r.clientset.AppsV1().Deployments(metav1.NamespaceAll).Watch(ctx, options)
 			if err != nil {
 				panic(err.Error())
 			}
@@ -115,7 +115,7 @@ func (r *Reader) createDeploymentsWatcher(ctx context.Context) []spawnWatcher {
 
 This creates a single `spawnWatcher`, but you can also create multiple if you need to watch multiple objects. The `RBAC` watcher creates 4 watchers, for example, in order to get all the data required.
 
-Which `clientset` call you use depends on the type of object you are watching. In this case, we are watching `Deployments`, so we use `AppsV1().Deployments("")`. My suggestion is if you don't know where to find your object, ask ChatGPT about it. K8 docs are pretty terrible for finding this information and ChatGPT is pretty good at finding it.
+Which `clientset` call you use depends on the type of object you are watching. In this case, we are watching `Deployments`, so we use `AppsV1().Deployments(metav1.NamespaceAll)`. My suggestion is if you don't know where to find your object, ask ChatGPT about it. K8 docs are pretty terrible for finding this information and ChatGPT is pretty good at finding it.
 
 Now you must update the `readers/watchlist/watchlist.go` file to have the associated `RetrieveType` flag.
 

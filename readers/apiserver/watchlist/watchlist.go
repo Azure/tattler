@@ -310,7 +310,8 @@ func (r *Reader) createNodesWatcher(ctx context.Context) []spawnWatcher {
 func (r *Reader) createPodsWatcher(ctx context.Context) []spawnWatcher {
 	return []spawnWatcher{
 		func(options metav1.ListOptions) (watch.Interface, error) {
-			wi, err := r.clientset.CoreV1().Pods("").Watch(ctx, options)
+
+			wi, err := r.clientset.CoreV1().Pods(metav1.NamespaceAll).Watch(ctx, options)
 			if err != nil {
 				return nil, err
 			}
@@ -367,7 +368,7 @@ func (r *Reader) createRBACWatcher(ctx context.Context) []spawnWatcher {
 func (r *Reader) createServicesWatcher(ctx context.Context) []spawnWatcher {
 	return []spawnWatcher{
 		func(options metav1.ListOptions) (watch.Interface, error) {
-			wi, err := r.clientset.CoreV1().Services("").Watch(ctx, options)
+			wi, err := r.clientset.CoreV1().Services(metav1.NamespaceAll).Watch(ctx, options)
 			if err != nil {
 				panic(err.Error())
 			}
@@ -379,7 +380,7 @@ func (r *Reader) createServicesWatcher(ctx context.Context) []spawnWatcher {
 func (r *Reader) createDeploymentsWatcher(ctx context.Context) []spawnWatcher {
 	return []spawnWatcher{
 		func(options metav1.ListOptions) (watch.Interface, error) {
-			wi, err := r.clientset.AppsV1().Deployments("").Watch(ctx, options)
+			wi, err := r.clientset.AppsV1().Deployments(metav1.NamespaceAll).Watch(ctx, options)
 			if err != nil {
 				panic(err.Error())
 			}
@@ -391,7 +392,7 @@ func (r *Reader) createDeploymentsWatcher(ctx context.Context) []spawnWatcher {
 func (r *Reader) createIngressesWatcher(ctx context.Context) []spawnWatcher {
 	return []spawnWatcher{
 		func(options metav1.ListOptions) (watch.Interface, error) {
-			wi, err := r.clientset.NetworkingV1().Ingresses("").Watch(ctx, options)
+			wi, err := r.clientset.NetworkingV1().Ingresses(metav1.NamespaceAll).Watch(ctx, options)
 			if err != nil {
 				panic(err.Error())
 			}
@@ -403,7 +404,7 @@ func (r *Reader) createIngressesWatcher(ctx context.Context) []spawnWatcher {
 func (r *Reader) createEndpointsWatcher(ctx context.Context) []spawnWatcher {
 	return []spawnWatcher{
 		func(options metav1.ListOptions) (watch.Interface, error) {
-			wi, err := r.clientset.CoreV1().Endpoints("").Watch(ctx, options)
+			wi, err := r.clientset.CoreV1().Endpoints(metav1.NamespaceAll).Watch(ctx, options)
 			if err != nil {
 				panic(err.Error())
 			}

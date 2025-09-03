@@ -51,14 +51,14 @@ func New(clientset ClientsetInterface) (*Relister, error) {
 func makePagers(clientset ClientsetInterface) map[types.Retrieve]listPage {
 	return map[types.Retrieve]listPage{
 		types.RTNode:              adapter(clientset.CoreV1().Nodes().List),
-		types.RTPod:               adapter(clientset.CoreV1().Pods("").List),
+		types.RTPod:               adapter(clientset.CoreV1().Pods(metav1.NamespaceAll).List),
 		types.RTNamespace:         adapter(clientset.CoreV1().Namespaces().List),
 		types.RTPersistentVolume:  adapter(clientset.CoreV1().PersistentVolumes().List),
 		types.RTRBAC:              adapter(clientset.RbacV1().Roles(metav1.NamespaceAll).List),
-		types.RTService:           adapter(clientset.CoreV1().Services("").List),
-		types.RTDeployment:        adapter(clientset.AppsV1().Deployments("").List),
-		types.RTIngressController: adapter(clientset.NetworkingV1().Ingresses("").List),
-		types.RTEndpoint:          adapter(clientset.CoreV1().Endpoints("").List),
+		types.RTService:           adapter(clientset.CoreV1().Services(metav1.NamespaceAll).List),
+		types.RTDeployment:        adapter(clientset.AppsV1().Deployments(metav1.NamespaceAll).List),
+		types.RTIngressController: adapter(clientset.NetworkingV1().Ingresses(metav1.NamespaceAll).List),
+		types.RTEndpoint:          adapter(clientset.CoreV1().Endpoints(metav1.NamespaceAll).List),
 	}
 }
 
