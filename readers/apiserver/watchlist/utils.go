@@ -2,29 +2,31 @@ package watchlist
 
 import (
 	"fmt"
-	"log/slog"
 	"time"
 
+	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
-	"github.com/gostdlib/base/retry/exponential"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch"
 )
 
-// retryableList wraps List() calls with exponential backoff using existing package boff.
-func retryableList(ctx context.Context, lister func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error), options metav1.ListOptions, logger *slog.Logger) (runtime.Object, error) {
-	var result runtime.Object
-	err := back.Retry(ctx, func(ctx context.Context, rec exponential.Record) error {
-		var retryErr error
-		result, retryErr = lister(ctx, options)
-		return retryErr // Let exponential backoff handle the retry logic
-	}, exponential.WithMaxAttempts(10))
-
-	if err != nil {
-		logger.Error(fmt.Sprintf("List() failed after all retries: %v", err))
+// getWatcher sends a spawnWatcher function to the provided channel and waits for the resulting watch.Interface or an error.
+func (r *Reader) getWatcher(ctx context.Context, rt types.Retrieve, sp spawnWatcher) (watch.Interface, error) {
+	promise := spawnReqMaker.New(ctx, sp)
+	select {
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	case r.spawnCh <- promise:
 	}
 
-	return result, err
+	resp, err := promise.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("error creating %v watcher: %v", rt, err)
+	}
+	if resp.Err != nil {
+		return nil, fmt.Errorf("error creating %v watcher: %v", rt, resp.Err)
+	}
+
+	return resp.V, nil
 }
 
 // resetTimer resets the timer t to d. If the timer has already fired, it will drain the channel.

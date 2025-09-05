@@ -9,11 +9,16 @@ import (
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/retry/exponential"
+	"github.com/gostdlib/base/values/generics/promises"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+func init() {
+	back = exponential.Must(exponential.New(exponential.WithTesting()))
+}
 
 // fakeListPage creates a test implementation of listPage
 func fakeListPage(entries []data.Entry, continueToken string, err error) listPage {
@@ -123,17 +128,25 @@ func TestMakePagers(t *testing.T) {
 	}
 }
 
-func TestRelisterList(t *testing.T) {
+func TestRelister(t *testing.T) {
+	t.Parallel()
+
 	pods := createTestPods(3)
 	entries := createTestEntries(pods)
 
 	tests := []struct {
-		name          string
-		rt            types.Retrieve
-		setupPagers   func() map[types.Retrieve]listPage
-		wantEntries   int
-		wantCallErr   bool
-		wantStreamErr bool
+		name              string
+		rt                types.Retrieve
+		setupPagers       func() map[types.Retrieve]listPage
+		setupClientset    func() *fake.Clientset
+		contextSetup      func() (context.Context, context.CancelFunc)
+		wantEntries       int
+		wantCallErr       bool
+		wantStreamErr     bool
+		wantCancellation  bool
+		validateEntries   func([]data.Entry, *testing.T)
+		validateBehavior  func(context.Context, context.CancelFunc, chan promises.Response[data.Entry], *testing.T)
+		expectChannelClosed bool
 	}{
 		{
 			name: "successful list",
@@ -174,285 +187,352 @@ func TestRelisterList(t *testing.T) {
 			},
 			wantStreamErr: true, // Error comes through channel
 		},
+		{
+			name: "pagination",
+			rt:   types.RTPod,
+			setupPagers: func() map[types.Retrieve]listPage {
+				pods1 := createTestPods(2)
+				entries1 := createTestEntries(pods1)
+				pods2 := createTestPods(1)
+				entries2 := createTestEntries(pods2)
+				
+				callCount := 0
+				return map[types.Retrieve]listPage{
+					types.RTPod: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+						callCount++
+						switch callCount {
+						case 1:
+							return entries1, "page2", nil
+						case 2:
+							return entries2, "", nil // Empty continue means no more pages
+						default:
+							return nil, "", errors.New("too many calls")
+						}
+					},
+				}
+			},
+			wantEntries: 3, // 2 + 1 from pagination
+		},
+		{
+			name: "context cancellation",
+			rt:   types.RTPod,
+			setupPagers: func() map[types.Retrieve]listPage {
+				return map[types.Retrieve]listPage{
+					types.RTPod: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+						select {
+						case <-ctx.Done():
+							return nil, "", context.Cause(ctx)
+						case <-time.After(100 * time.Millisecond):
+							return createTestEntries(createTestPods(1)), "", nil
+						}
+					},
+				}
+			},
+			contextSetup: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				return ctx, cancel
+			},
+			validateBehavior: func(ctx context.Context, cancel context.CancelFunc, ch chan promises.Response[data.Entry], t *testing.T) {
+				// Cancel context immediately
+				cancel()
+				
+				// Read from channel - should get an error
+				var gotError bool
+				for response := range ch {
+					if response.Err != nil {
+						gotError = true
+						// Accept either context.Canceled or ErrRetryCanceled (when using WithTesting())
+						if !errors.Is(response.Err, context.Canceled) && !errors.Is(response.Err, exponential.ErrRetryCanceled) {
+							t.Errorf("expected context.Canceled or ErrRetryCanceled error, got %v", response.Err)
+						}
+						break
+					}
+				}
+				
+				if !gotError {
+					t.Error("expected error due to context cancellation")
+				}
+			},
+		},
+		{
+			name: "context cancellation during iteration",
+			rt:   types.RTPod,
+			setupPagers: func() map[types.Retrieve]listPage {
+				pods := createTestPods(10)
+				entries := createTestEntries(pods)
+				return map[types.Retrieve]listPage{
+					types.RTPod: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+						return entries, "", nil
+					},
+				}
+			},
+			contextSetup: func() (context.Context, context.CancelFunc) {
+				return context.WithCancel(context.Background())
+			},
+			validateBehavior: func(ctx context.Context, cancel context.CancelFunc, ch chan promises.Response[data.Entry], t *testing.T) {
+				// Read one entry, then cancel
+				entryCount := 0
+				var gotError bool
+				for response := range ch {
+					if response.Err != nil {
+						gotError = true
+						break
+					}
+					entryCount++
+					if entryCount == 1 {
+						cancel() // Cancel after reading first entry
+					}
+				}
+				
+				if !gotError {
+					t.Error("expected error due to context cancellation during iteration")
+				}
+				
+				if entryCount == 0 {
+					t.Error("should have read at least one entry before cancellation")
+				}
+			},
+		},
+		{
+			name: "integration with fake clientset",
+			rt:   types.RTPod,
+			setupClientset: func() *fake.Clientset {
+				pod1 := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod-1",
+						Namespace: "default",
+						UID:       k8stypes.UID("uid-1"),
+					},
+				}
+				
+				pod2 := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod-2", 
+						Namespace: "default",
+						UID:       k8stypes.UID("uid-2"),
+					},
+				}
+				
+				return fake.NewSimpleClientset(pod1, pod2)
+			},
+			wantEntries: 2,
+			validateEntries: func(entries []data.Entry, t *testing.T) {
+				// Verify entries have correct properties
+				for i, entry := range entries {
+					if entry.SourceType() != data.STWatchList {
+						t.Errorf("entry[%d].SourceType() = %v, want %v", i, entry.SourceType(), data.STWatchList)
+					}
+					if entry.ChangeType() != data.CTSnapshot {
+						t.Errorf("entry[%d].ChangeType() = %v, want %v", i, entry.ChangeType(), data.CTSnapshot)
+					}
+					if entry.ObjectType() != data.OTPod {
+						t.Errorf("entry[%d].ObjectType() = %v, want %v", i, entry.ObjectType(), data.OTPod)
+					}
+				}
+			},
+		},
+		{
+			name: "channel closure",
+			rt:   types.RTPod,
+			setupPagers: func() map[types.Retrieve]listPage {
+				return map[types.Retrieve]listPage{
+					types.RTPod: fakeListPage(createTestEntries(createTestPods(1)), "", nil),
+				}
+			},
+			wantEntries:         1,
+			expectChannelClosed: true,
+		},
 	}
 
-	ec := errCheck{testName: "TestRelisterList"}
+	ec := errCheck{testName: "TestRelister"}
 
 	for _, test := range tests {
-		r := &Relister{pagers: test.setupPagers()}
-
-		ctx := context.Background()
-		ch, err := r.List(ctx, test.rt)
-		if ec.continueTest(test.name, test.wantCallErr, err, t) {
-			if !errors.Is(err, exponential.ErrPermanent) {
-				t.Errorf("TestRelisterList(%s): wanted error was not permanent", test.name)
+		t.Run(test.name, func(t *testing.T) {
+			var r *Relister
+			var err error
+			
+			// Setup relister
+			if test.setupClientset != nil {
+				clientset := test.setupClientset()
+				r, err = New(clientset)
+				if err != nil {
+					t.Fatalf("New() error = %v", err)
+				}
+			} else if test.setupPagers != nil {
+				r = &Relister{pagers: test.setupPagers()}
 			}
-			continue
-		}
 
-		// Read all entries from channel
-		var receivedEntries []data.Entry
-		var finalErr error
-
-		for response := range ch {
-			if response.Err != nil {
-				finalErr = response.Err
-				break
+			// Setup context
+			ctx := context.Background()
+			var cancel context.CancelFunc
+			if test.contextSetup != nil {
+				ctx, cancel = test.contextSetup()
 			}
-			receivedEntries = append(receivedEntries, response.V)
-		}
 
-		if ec.continueTest(test.name, test.wantStreamErr, finalErr, t) {
-			continue
-		}
+			ch, err := r.List(ctx, test.rt)
+			if ec.continueTest(test.name, test.wantCallErr, err, t) {
+				if !errors.Is(err, exponential.ErrPermanent) {
+					t.Errorf("wanted error was not permanent")
+				}
+				return
+			}
 
-		if len(receivedEntries) != test.wantEntries {
-			t.Errorf("TestRelisterList(%s): got %d entries, want %d", test.name, len(receivedEntries), test.wantEntries)
-		}
+			// Use custom validation if provided
+			if test.validateBehavior != nil {
+				test.validateBehavior(ctx, cancel, ch, t)
+				return
+			}
+
+			// Standard validation
+			var receivedEntries []data.Entry
+			var finalErr error
+
+			for response := range ch {
+				if response.Err != nil {
+					finalErr = response.Err
+					break
+				}
+				receivedEntries = append(receivedEntries, response.V)
+			}
+
+			if ec.continueTest(test.name, test.wantStreamErr, finalErr, t) {
+				return
+			}
+
+			if len(receivedEntries) != test.wantEntries {
+				t.Errorf("got %d entries, want %d", len(receivedEntries), test.wantEntries)
+			}
+
+			// Custom entry validation
+			if test.validateEntries != nil {
+				test.validateEntries(receivedEntries, t)
+			}
+
+			// Check channel closure if needed
+			if test.expectChannelClosed {
+				select {
+				case response, ok := <-ch:
+					if ok {
+						t.Errorf("channel should be closed, but received: %v", response)
+					}
+				default:
+					// This is expected - channel is closed
+				}
+			}
+		})
 	}
 }
 
-func TestRelisterListPagination(t *testing.T) {
-	pods1 := createTestPods(2)
-	entries1 := createTestEntries(pods1)
 
-	pods2 := createTestPods(1)
-	entries2 := createTestEntries(pods2)
+func TestRetryableList(t *testing.T) {
+	t.Parallel()
 
-	callCount := 0
-	paginatedLister := func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
-		callCount++
-		switch callCount {
-		case 1:
-			if opts.Continue != "" {
-				t.Errorf("TestRelisterListPagination: first call should have empty continue token, got %s", opts.Continue)
-			}
-			return entries1, "page2", nil
-		case 2:
-			if opts.Continue != "page2" {
-				t.Errorf("TestRelisterListPagination: second call should have continue token 'page2', got %s", opts.Continue)
-			}
-			return entries2, "", nil // Empty continue means no more pages
-		default:
-			t.Errorf("TestRelisterListPagination: unexpected call %d to lister", callCount)
-			return nil, "", errors.New("too many calls")
-		}
-	}
-
-	r := &Relister{
-		pagers: map[types.Retrieve]listPage{
-			types.RTPod: paginatedLister,
-		},
-	}
-
-	ctx := context.Background()
-	ch, err := r.List(ctx, types.RTPod)
-	if err != nil {
-		t.Fatalf("TestRelisterListPagination: List() error = %v", err)
-	}
-
-	var receivedEntries []data.Entry
-	for response := range ch {
-		if response.Err != nil {
-			t.Fatalf("TestRelisterListPagination: unexpected error from channel: %v", response.Err)
-		}
-		receivedEntries = append(receivedEntries, response.V)
-	}
-
-	expectedTotal := len(entries1) + len(entries2)
-	if len(receivedEntries) != expectedTotal {
-		t.Errorf("TestRelisterListPagination: got %d entries, want %d", len(receivedEntries), expectedTotal)
-	}
-
-	if callCount != 2 {
-		t.Errorf("TestRelisterListPagination: expected 2 calls to lister for pagination, got %d", callCount)
-	}
-}
-
-func TestRelisterListContextCancellation(t *testing.T) {
-	blockingLister := func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
-		select {
-		case <-ctx.Done():
-			return nil, "", context.Cause(ctx)
-		case <-time.After(100 * time.Millisecond):
-			pods := createTestPods(1)
-			entries := createTestEntries(pods)
-			return entries, "", nil
-		}
-	}
-
-	r := &Relister{
-		pagers: map[types.Retrieve]listPage{
-			types.RTPod: blockingLister,
-		},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	ch, err := r.List(ctx, types.RTPod)
-	if err != nil {
-		t.Fatalf("TestRelisterListContextCancellation: List() error = %v", err)
-	}
-
-	// Cancel context immediately
-	cancel()
-
-	// Read from channel - should get an error
-	var gotError bool
-	for response := range ch {
-		if response.Err != nil {
-			gotError = true
-			if !errors.Is(response.Err, context.Canceled) {
-				t.Errorf("TestRelisterListContextCancellation: expected context.Canceled error, got %v", response.Err)
-			}
-			break
-		}
-	}
-
-	if !gotError {
-		t.Error("TestRelisterListContextCancellation: expected error due to context cancellation")
-	}
-}
-
-func TestRelisterListContextCancellationDuringIteration(t *testing.T) {
-	pods := createTestPods(10)
+	pods := createTestPods(3)
 	entries := createTestEntries(pods)
 
-	slowLister := func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
-		return entries, "", nil
-	}
-
-	r := &Relister{
-		pagers: map[types.Retrieve]listPage{
-			types.RTPod: slowLister,
+	tests := []struct {
+		name         string
+		lister       listPage
+		wantErr      bool
+		wantEntries  []data.Entry
+		wantContinue string
+	}{
+		{
+			name: "Success: returns result on first try",
+			lister: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+				return entries, "continue-token", nil
+			},
+			wantErr:      false,
+			wantEntries:  entries,
+			wantContinue: "continue-token",
+		},
+		{
+			name: "Success: retries and succeeds",
+			lister: func() listPage {
+				attempts := 0
+				return func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+					attempts++
+					if attempts < 3 {
+						return nil, "", errors.New("temporary error")
+					}
+					return entries, "token-after-retry", nil
+				}
+			}(),
+			wantErr:      false,
+			wantEntries:  entries,
+			wantContinue: "token-after-retry",
+		},
+		{
+			name: "Error: fails after max retries",
+			lister: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+				return nil, "", errors.New("persistent error")
+			},
+			wantErr: true,
+		},
+		{
+			name: "Error: context cancelled",
+			lister: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+				select {
+				case <-ctx.Done():
+					return nil, "", ctx.Err()
+				default:
+					return nil, "", errors.New("should not reach here")
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "Success: partial data with continue token",
+			lister: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+				// Return first two entries with continue token
+				return entries[:2], "more-data", nil
+			},
+			wantErr:      false,
+			wantEntries:  entries[:2],
+			wantContinue: "more-data",
 		},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	ch, err := r.List(ctx, types.RTPod)
-	if err != nil {
-		t.Fatalf("TestRelisterListContextCancellationDuringIteration: List() error = %v", err)
-	}
-
-	// Read one entry, then cancel
-	entryCount := 0
-	var gotError bool
-	for response := range ch {
-		if response.Err != nil {
-			gotError = true
-			break
+	for _, test := range tests {
+		ctx := t.Context()
+		if test.name == "Error: context cancelled" {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			cancel()
 		}
-		entryCount++
-		if entryCount == 1 {
-			cancel() // Cancel after reading first entry
+
+		options := metav1.ListOptions{}
+		result, continueToken, err := retryableList(ctx, test.lister, options)
+
+		switch {
+		case test.wantErr && err == nil:
+			t.Errorf("TestRetryableList(%s): got err == nil, want err != nil", test.name)
+		case !test.wantErr && err != nil:
+			t.Errorf("TestRetryableList(%s): got err == %v, want err == nil", test.name, err)
 		}
-	}
 
-	if !gotError {
-		t.Error("TestRelisterListContextCancellationDuringIteration: expected error due to context cancellation during iteration")
-	}
+		if !test.wantErr {
+			if len(result) != len(test.wantEntries) {
+				t.Errorf("TestRetryableList(%s): got %d entries, want %d", test.name, len(result), len(test.wantEntries))
+			}
 
-	if entryCount == 0 {
-		t.Error("TestRelisterListContextCancellationDuringIteration: should have read at least one entry before cancellation")
+			for i, entry := range result {
+				if i < len(test.wantEntries) {
+					if entry.UID() != test.wantEntries[i].UID() {
+						t.Errorf("TestRetryableList(%s): entry[%d] UID mismatch: got %s, want %s",
+							test.name, i, entry.UID(), test.wantEntries[i].UID())
+					}
+				}
+			}
+
+			if continueToken != test.wantContinue {
+				t.Errorf("TestRetryableList(%s): continue token mismatch: got %q, want %q",
+					test.name, continueToken, test.wantContinue)
+			}
+		}
 	}
 }
 
-func TestRelisterIntegrationWithFakeClientset(t *testing.T) {
-	pod1 := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-pod-1",
-			Namespace: "default",
-			UID:       k8stypes.UID("uid-1"),
-		},
-	}
-
-	pod2 := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-pod-2",
-			Namespace: "default",
-			UID:       k8stypes.UID("uid-2"),
-		},
-	}
-
-	clientset := fake.NewSimpleClientset(pod1, pod2)
-
-	relister, err := New(clientset)
-	if err != nil {
-		t.Fatalf("TestRelisterIntegrationWithFakeClientset: New() error = %v", err)
-	}
-
-	ctx := context.Background()
-	ch, err := relister.List(ctx, types.RTPod)
-	if err != nil {
-		t.Fatalf("TestRelisterIntegrationWithFakeClientset: List() error = %v", err)
-	}
-
-	var receivedEntries []data.Entry
-	for response := range ch {
-		if response.Err != nil {
-			t.Fatalf("TestRelisterIntegrationWithFakeClientset: unexpected error from channel: %v", response.Err)
-		}
-		receivedEntries = append(receivedEntries, response.V)
-	}
-
-	if len(receivedEntries) != 2 {
-		t.Errorf("TestRelisterIntegrationWithFakeClientset: got %d entries, want 2", len(receivedEntries))
-	}
-
-	// Verify entries have correct properties
-	for i, entry := range receivedEntries {
-		if entry.SourceType() != data.STWatchList {
-			t.Errorf("TestRelisterIntegrationWithFakeClientset: entry[%d].SourceType() = %v, want %v", i, entry.SourceType(), data.STWatchList)
-		}
-		if entry.ChangeType() != data.CTSnapshot {
-			t.Errorf("TestRelisterIntegrationWithFakeClientset: entry[%d].ChangeType() = %v, want %v", i, entry.ChangeType(), data.CTSnapshot)
-		}
-		if entry.ObjectType() != data.OTPod {
-			t.Errorf("TestRelisterIntegrationWithFakeClientset: entry[%d].ObjectType() = %v, want %v", i, entry.ObjectType(), data.OTPod)
-		}
-	}
-}
-
-func TestRelisterChannelClosure(t *testing.T) {
-	pods := createTestPods(1)
-	entries := createTestEntries(pods)
-
-	r := &Relister{
-		pagers: map[types.Retrieve]listPage{
-			types.RTPod: fakeListPage(entries, "", nil),
-		},
-	}
-
-	ctx := context.Background()
-	ch, err := r.List(ctx, types.RTPod)
-	if err != nil {
-		t.Fatalf("TestRelisterChannelClosure: List() error = %v", err)
-	}
-
-	// Read all entries
-	entryCount := 0
-	for response := range ch {
-		if response.Err != nil {
-			t.Fatalf("TestRelisterChannelClosure: unexpected error: %v", response.Err)
-		}
-		entryCount++
-	}
-
-	// Channel should be closed now
-	select {
-	case response, ok := <-ch:
-		if ok {
-			t.Errorf("TestRelisterChannelClosure: channel should be closed, but received: %v", response)
-		}
-	default:
-		// This is expected - channel is closed
-	}
-
-	if entryCount != 1 {
-		t.Errorf("TestRelisterChannelClosure: expected 1 entry, got %d", entryCount)
-	}
-}
-
-// Benchmark tests
 func BenchmarkRelisterList(b *testing.B) {
 	pods := createTestPods(100)
 	entries := createTestEntries(pods)

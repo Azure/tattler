@@ -77,8 +77,9 @@ func (r *Relister) List(ctx context.Context, rt types.Retrieve) (chan promises.R
 // handle pagination and context cancellation. If the context is cancelled, the channel will be closed
 // and any error will be sent to the channel. If there are no more pages, the channel will be closed.
 func (r *Relister) list(ctx context.Context, lister listPage) chan promises.Response[data.Entry] {
-	ch := make(chan promises.Response[data.Entry], 1)
+
 	var (
+		ch            = make(chan promises.Response[data.Entry], 1)
 		list          []data.Entry
 		continueToken string
 		err           error
@@ -89,8 +90,9 @@ func (r *Relister) list(ctx context.Context, lister listPage) chan promises.Resp
 		func() {
 			defer close(ch)
 			for {
-				list, continueToken, err = lister(
+				list, continueToken, err = retryableList(
 					ctx,
+					lister,
 					metav1.ListOptions{
 						Limit:    100,
 						Continue: continueToken,
@@ -118,4 +120,24 @@ func (r *Relister) list(ctx context.Context, lister listPage) chan promises.Resp
 	)
 
 	return ch
+}
+
+var back = exponential.Must(exponential.New())
+
+// retryableList wraps a listPage with exponential backoff using existing package boff.
+func retryableList(ctx context.Context, lister listPage, options metav1.ListOptions) ([]data.Entry, string, error) {
+	var result []data.Entry
+	var cont string
+
+	err := back.Retry(
+		ctx,
+		func(ctx context.Context, rec exponential.Record) error {
+			var retryErr error
+			result, cont, retryErr = lister(ctx, options)
+			return retryErr // Let exponential backoff handle the retry logic
+		},
+		exponential.WithMaxAttempts(10),
+	)
+
+	return result, cont, err
 }
