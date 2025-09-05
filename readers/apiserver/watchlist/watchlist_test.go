@@ -2,7 +2,6 @@ package watchlist
 
 import (
 	"errors"
-	"log"
 	"reflect"
 	"slices"
 	"strings"
@@ -181,10 +180,13 @@ func TestClose(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		didCancel := false
 		r := &Reader{
 			started:  test.started,
 			closeCh:  make(chan struct{}),
 			filterIn: make(chan watch.Event, 1),
+			cancel:   func() { didCancel = true },
+			spawnCh:  make(chan promises.Promise[spawnWatcher, watch.Interface]),
 		}
 
 		if test.started {
@@ -202,6 +204,21 @@ func TestClose(t *testing.T) {
 		case !test.wantErr && err != nil:
 			t.Errorf("TestClose(%s): got err == %v, want err == nil", test.name, err)
 			continue
+		case err != nil:
+			continue
+		}
+		if !didCancel {
+			t.Errorf("TestClose(%s): cancel was not called", test.name)
+		}
+		select {
+		case <-r.closeCh:
+		default:
+			t.Errorf("TestClose(%s): closeCh was not closed", test.name)
+		}
+		select {
+		case <-r.spawnCh:
+		default:
+			t.Errorf("TestClose(%s): spawnCh was not closed", test.name)
 		}
 	}
 }
@@ -248,7 +265,7 @@ func TestSetOut(t *testing.T) {
 			continue
 		}
 
-		if !test.wantErr && r.ch != test.out {
+		if !test.wantErr && r.dataCh != test.out {
 			t.Errorf("TestSetOut(%s): channel was not set correctly", test.name)
 		}
 	}
@@ -256,8 +273,6 @@ func TestSetOut(t *testing.T) {
 
 func TestRun(t *testing.T) {
 	t.Parallel()
-
-	log.Println("got here")
 
 	watchesCalled := []types.Retrieve{}
 
@@ -320,7 +335,6 @@ func TestRun(t *testing.T) {
 			retrieves: types.RTNamespace,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
-				log.Println(watchesCalled)
 				return nil
 			},
 			wantRetrieves: []types.Retrieve{types.RTNamespace},
@@ -439,7 +453,7 @@ func TestRun(t *testing.T) {
 
 		r := &Reader{
 			started:       test.started,
-			ch:            test.ch,
+			dataCh:        test.ch,
 			retrieveTypes: test.retrieves,
 			fakeWatch:     test.fakeWatch,
 			clientset:     clientset,
@@ -472,7 +486,7 @@ func TestSetupCache(t *testing.T) {
 	t.Parallel()
 
 	r := &Reader{
-		ch: make(chan data.Entry, 1),
+		dataCh: make(chan data.Entry, 1),
 	}
 	if err := r.setupFilter(context.Background()); err != nil {
 		t.Fatalf("TestSetupCache: got err == %v, want err == nil", err)
@@ -543,13 +557,19 @@ func TestWatch(t *testing.T) {
 		eventWatcherCount = 0
 
 		r := &Reader{
-			fakeWatchEvents: test.eventWatcher,
+			fakeWatchEvents:   test.eventWatcher,
+			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			watcherSpawnDelay: 10 * time.Millisecond, // Use shorter delay for tests
 		}
 
 		var ctx context.Context
 		if test.ctx.Err() == nil {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithCancel(context.Background())
+
+			// Start the connectWatcher goroutine to process spawn requests
+			go r.connectWatcher(ctx, r.spawnCh)
+
 			go func() {
 				time.Sleep(100 * time.Millisecond)
 				cancel()
@@ -805,7 +825,7 @@ func TestPerformRelist(t *testing.T) {
 		r := &Reader{
 			retrieveTypes:  test.retrieves,
 			relister:       relister,
-			ch:             ch,
+			dataCh:         ch,
 			relistInterval: 1 * time.Hour,
 		}
 
@@ -863,6 +883,292 @@ func TestPerformRelist(t *testing.T) {
 }
 
 // TestPerformRelistWithError tests error handling in performRelist
+func TestResetTimer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		timerFired    bool
+		expectedReset bool
+	}{
+		{
+			name:          "Success: timer not fired, resets normally",
+			timerFired:    false,
+			expectedReset: true,
+		},
+		{
+			name:          "Success: timer already fired, drains channel and resets",
+			timerFired:    true,
+			expectedReset: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// Create a timer with initial duration
+			initialDuration := 50 * time.Millisecond
+			timer := time.NewTimer(initialDuration)
+
+			if test.timerFired {
+				// Let the timer fire
+				<-timer.C
+			}
+
+			// Reset the timer with new duration
+			newDuration := 100 * time.Millisecond
+			resetTimer(newDuration, timer)
+
+			// Verify timer works correctly after reset
+			start := time.Now()
+			<-timer.C
+			elapsed := time.Since(start)
+
+			// Allow some tolerance for timing
+			minDuration := newDuration - 20*time.Millisecond
+			maxDuration := newDuration + 50*time.Millisecond
+
+			if elapsed < minDuration || elapsed > maxDuration {
+				t.Errorf("TestResetTimer(%s): timer fired after %v, expected ~%v", test.name, elapsed, newDuration)
+			}
+
+			// Verify channel is empty after reading
+			select {
+			case <-timer.C:
+				t.Errorf("TestResetTimer(%s): timer channel should be empty after reading", test.name)
+			default:
+				// Expected: channel is empty
+			}
+		})
+	}
+}
+
+func TestHandleWatcher(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		watchEventErrors []error // Errors to return from watchEvents
+		spawnErrors      []error // Errors to return when recreating watcher
+		ctxTimeout       time.Duration
+		expectExit       bool
+	}{
+		{
+			name:             "Success: handles watcher until context cancelled",
+			watchEventErrors: []error{nil, nil},
+			ctxTimeout:       50 * time.Millisecond,
+			expectExit:       true,
+		},
+		{
+			name:             "Success: recovers from watchEvents error",
+			watchEventErrors: []error{errors.New("watch error"), nil},
+			spawnErrors:      []error{nil}, // Successfully recreates watcher
+			ctxTimeout:       100 * time.Millisecond,
+			expectExit:       true,
+		},
+		{
+			name:             "Error: retries until context cancelled",
+			watchEventErrors: []error{errors.New("watch error")},
+			spawnErrors:      []error{errors.New("spawn error 1"), errors.New("spawn error 2"), errors.New("spawn error 3"), errors.New("spawn error 4"), errors.New("spawn error 5")},
+			ctxTimeout:       100 * time.Millisecond,
+			expectExit:       false, // Returns error when retry fails due to context
+		},
+	}
+
+	for _, test := range tests {
+		ctx, cancel := context.WithTimeout(t.Context(), test.ctxTimeout)
+		defer cancel()
+
+		watchEventIndex := 0
+		spawnIndex := 0
+
+		r := &Reader{
+			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			watcherSpawnDelay: 1 * time.Millisecond,
+			fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
+				if watchEventIndex < len(test.watchEventErrors) {
+					err := test.watchEventErrors[watchEventIndex]
+					watchEventIndex++
+					if err != nil {
+						return "", err
+					}
+				}
+				// Simulate watching events until context is done
+				<-ctx.Done()
+				return "", nil
+			},
+		}
+
+		// Start connectWatcher to handle spawn requests
+		go r.connectWatcher(ctx, r.spawnCh)
+
+		// Create spawn function that returns errors as specified
+		sp := func(options metav1.ListOptions) (watch.Interface, error) {
+			if spawnIndex < len(test.spawnErrors) {
+				err := test.spawnErrors[spawnIndex]
+				spawnIndex++
+				if err != nil {
+					return nil, err
+				}
+			}
+			return &fakeWatcher{}, nil
+		}
+
+		// Create initial watcher
+		w := &fakeWatcher{}
+
+		err := r.handleWatcher(ctx, types.RTNamespace, w, sp)
+
+		if test.expectExit && err != nil {
+			t.Errorf("TestHandleWatcher(%s): unexpected error: %v", test.name, err)
+		}
+		if !test.expectExit && err == nil {
+			t.Errorf("TestHandleWatcher(%s): expected error but got nil", test.name)
+		}
+	}
+}
+
+func TestGetWatcher(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		cancelBefore bool
+		spawn        spawnWatcher
+		setupFn      func(r *Reader, ctx context.Context)
+		wantErr      bool
+		errMsg       string
+	}{
+		{
+			name: "Success: watcher created successfully",
+			spawn: func(options metav1.ListOptions) (watch.Interface, error) {
+				return &fakeWatcher{}, nil
+			},
+			setupFn: func(r *Reader, ctx context.Context) {
+				go r.connectWatcher(ctx, r.spawnCh)
+			},
+			wantErr: false,
+		},
+		{
+			name: "Error: spawn function returns error",
+			spawn: func(options metav1.ListOptions) (watch.Interface, error) {
+				return nil, errors.New("connection failed")
+			},
+			setupFn: func(r *Reader, ctx context.Context) {
+				go r.connectWatcher(ctx, r.spawnCh)
+			},
+			wantErr: true,
+			errMsg:  "connection failed",
+		},
+		{
+			name:         "Error: context cancelled before sending",
+			cancelBefore: true,
+			spawn: func(options metav1.ListOptions) (watch.Interface, error) {
+				return &fakeWatcher{}, nil
+			},
+			setupFn: func(r *Reader, ctx context.Context) {
+				// Don't start connectWatcher, and use cancelled context
+			},
+			wantErr: true,
+			errMsg:  "context canceled",
+		},
+	}
+
+	for _, test := range tests {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		r := &Reader{
+			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			watcherSpawnDelay: 1 * time.Millisecond, // Short for testing
+		}
+
+		if test.cancelBefore {
+			cancel()
+		} else {
+			test.setupFn(r, ctx)
+			time.Sleep(10 * time.Millisecond) // Give goroutine time to start
+		}
+
+		w, err := r.getWatcher(ctx, types.RTNamespace, test.spawn)
+
+		switch {
+		case test.wantErr && err == nil:
+			t.Errorf("TestGetWatcher(%s): got err == nil, want err != nil", test.name)
+		case !test.wantErr && err != nil:
+			t.Errorf("TestGetWatcher(%s): got err == %v, want err == nil", test.name, err)
+		case test.wantErr && err != nil:
+			if test.errMsg != "" && !strings.Contains(err.Error(), test.errMsg) {
+				t.Errorf("TestGetWatcher(%s): error message doesn't contain %q, got %v", test.name, test.errMsg, err)
+			}
+		}
+
+		if !test.wantErr && w == nil {
+			t.Errorf("TestGetWatcher(%s): got watcher == nil, want watcher != nil", test.name)
+		}
+	}
+}
+
+func TestConnectWatcherThrottling(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	r := &Reader{
+		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+		watcherSpawnDelay: 50 * time.Millisecond, // Short delay for testing
+	}
+
+	// Track timing of watcher creations
+	var creationTimes []time.Time
+	watcherCount := 3
+
+	// Start the connectWatcher goroutine
+	go r.connectWatcher(ctx, r.spawnCh)
+
+	// Send multiple spawn requests
+	for range watcherCount {
+		promise := spawnReqMaker.New(
+			ctx,
+			// This is a fake spawnWatcher that records creation time vs actually doing anything.
+			func(options metav1.ListOptions) (watch.Interface, error) {
+				creationTimes = append(creationTimes, time.Now())
+				return &fakeWatcher{}, nil
+			},
+		)
+
+		select {
+		case r.spawnCh <- promise:
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("TestConnectWatcherThrottling: timeout sending to spawn channel")
+		}
+
+		resp, err := promise.Get(ctx)
+		if err != nil {
+			t.Errorf("TestConnectWatcherThrottling: promise.Get() error = %v", err)
+		}
+		if resp.Err != nil {
+			t.Errorf("TestConnectWatcherThrottling: spawn error = %v", resp.Err)
+		}
+	}
+
+	// Verify throttling occurred - watchers should be created with delays
+	if len(creationTimes) != watcherCount {
+		t.Errorf("TestConnectWatcherThrottling: got %d creation times, want %d", len(creationTimes), watcherCount)
+	}
+
+	// Check delays between creations (should be at least watcherSpawnDelay)
+	for i := 1; i < len(creationTimes); i++ {
+		delay := creationTimes[i].Sub(creationTimes[i-1])
+		// Allow some tolerance for timing
+		minDelay := r.watcherSpawnDelay - 10*time.Millisecond
+		if delay < minDelay {
+			t.Errorf("TestConnectWatcherThrottling: delay between watcher %d and %d was %v, expected at least %v",
+				i-1, i, delay, minDelay)
+		}
+	}
+}
+
 func TestPerformRelistWithError(t *testing.T) {
 	t.Parallel()
 
@@ -870,7 +1176,7 @@ func TestPerformRelistWithError(t *testing.T) {
 	ch := make(chan data.Entry, 10)
 
 	// Create a mock relister that returns an error
-	mockRelister := &mockRelister{
+	relister := &fakeRelister{
 		listFunc: func(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error) {
 			respCh := make(chan promises.Response[data.Entry], 1)
 			go func() {
@@ -883,8 +1189,8 @@ func TestPerformRelistWithError(t *testing.T) {
 
 	r := &Reader{
 		retrieveTypes: types.RTPod,
-		relister:      mockRelister,
-		ch:            ch,
+		relister:      relister,
+		dataCh:        ch,
 	}
 
 	// performRelist should log the error but not return it
@@ -894,12 +1200,12 @@ func TestPerformRelistWithError(t *testing.T) {
 	}
 }
 
-// mockRelister is a mock implementation of the Relister interface
-type mockRelister struct {
+// fakeRelister is a mock implementation of the Relister interface
+type fakeRelister struct {
 	listFunc func(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error)
 }
 
-func (m *mockRelister) List(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error) {
+func (m *fakeRelister) List(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error) {
 	if m.listFunc != nil {
 		return m.listFunc(ctx, rt)
 	}
