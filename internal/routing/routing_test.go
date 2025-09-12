@@ -1,22 +1,20 @@
 package routing
 
 import (
-	"context"
 	"testing"
 
-	"github.com/Azure/tattler/batching"
-
+	"github.com/Azure/tattler/data"
 	"github.com/kylelemons/godebug/pretty"
 )
 
 func TestNew(t *testing.T) {
 	t.Parallel()
 
-	goodCh := make(chan batching.Batches)
+	goodCh := make(chan data.Entry)
 
 	tests := []struct {
 		name    string
-		input   chan batching.Batches
+		input   chan data.Entry
 		wantErr bool
 	}{
 		{
@@ -30,7 +28,7 @@ func TestNew(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		b, err := New(context.Background(), test.input)
+		b, err := New(t.Context(), test.input)
 		switch {
 		case err == nil && test.wantErr:
 			t.Errorf("TestNew(%s): got err == nil, want err != nil", test.name)
@@ -42,7 +40,7 @@ func TestNew(t *testing.T) {
 			continue
 		}
 
-		if b.input == nil {
+		if b.in == nil {
 			t.Errorf("TestNew(%s): should have set .input, but did not", test.name)
 			continue
 		}
@@ -57,12 +55,12 @@ func TestNew(t *testing.T) {
 func TestRegister(t *testing.T) {
 	t.Parallel()
 
-	goodCh := make(chan batching.Batches)
+	goodCh := make(chan data.Entry)
 
 	tests := []struct {
 		name      string
 		routeName string
-		ch        chan batching.Batches
+		ch        chan data.Entry
 		started   bool
 		wantErr   bool
 	}{
@@ -91,9 +89,9 @@ func TestRegister(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		b := &Batches{started: test.started}
+		b := &Router{started: test.started}
 
-		err := b.Register(context.Background(), test.routeName, test.ch)
+		err := b.Register(t.Context(), test.routeName, test.ch)
 		switch {
 		case err == nil && test.wantErr:
 			t.Errorf("TestRegister(%s): got err == nil, want err != nil", test.name)
@@ -116,22 +114,22 @@ func TestStart(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		b       *Batches
+		b       *Router
 		wantErr bool
 	}{
 		{
 			name:    "Error: No routes",
-			b:       &Batches{},
+			b:       &Router{},
 			wantErr: true,
 		},
 		{
 			name: "Success",
-			b:    &Batches{routes: []route{route{out: make(chan batching.Batches, 1)}}},
+			b:    &Router{routes: []route{route{out: make(chan data.Entry, 1)}}},
 		},
 	}
 
 	for _, test := range tests {
-		err := test.b.Start(context.Background())
+		err := test.b.Start(t.Context())
 		switch {
 		case err == nil && test.wantErr:
 			t.Errorf("TestStart(%s): got err == nil, want err != nil", test.name)
@@ -163,25 +161,25 @@ func TestPush(t *testing.T) {
 	tests := []struct {
 		name    string
 		route   route
-		want    batching.Batches
+		want    data.Entry
 		wantErr bool
 	}{
 		{
 			name:    "Error: full channel",
-			route:   route{name: "test", out: make(chan batching.Batches)},
+			route:   route{name: "test", out: make(chan data.Entry)},
 			wantErr: true,
 		},
 		{
 			name:  "Success",
-			route: route{name: "test", out: make(chan batching.Batches, 1)},
-			want:  batching.Batches{},
+			route: route{name: "test", out: make(chan data.Entry, 1)},
+			want:  data.Entry{},
 		},
 	}
 
 	for _, test := range tests {
-		b := &Batches{}
+		b := &Router{}
 
-		err := b.push(context.Background(), test.route, test.want)
+		err := b.push(t.Context(), test.route, test.want)
 		switch {
 		case err == nil && test.wantErr:
 			t.Errorf("TestPush(%s): got err == nil, want err != nil", test.name)

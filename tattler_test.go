@@ -3,11 +3,8 @@ package tattler
 import (
 	"context"
 	"errors"
-	"log"
 	"testing"
-	"time"
 
-	"github.com/Azure/tattler/batching"
 	"github.com/Azure/tattler/data"
 	"github.com/Azure/tattler/internal/routing"
 )
@@ -25,58 +22,6 @@ func (f *fakeReader) SetOut(context.Context, chan data.Entry) error {
 func (f *fakeReader) Run(context.Context) error {
 	f.runCalled = true
 	return f.runErr
-}
-
-func TestNew(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		in            chan data.Entry
-		batchTimespan time.Duration
-		wantErr       bool
-	}{
-		{
-			name:          "Error: nil input",
-			batchTimespan: time.Second,
-			wantErr:       true,
-		},
-		{
-			name:    "Error: 0 batchTimespan",
-			in:      make(chan data.Entry, 1),
-			wantErr: true,
-		},
-		{
-			name:          "Success",
-			in:            make(chan data.Entry, 1),
-			batchTimespan: time.Second,
-		},
-	}
-
-	for _, test := range tests {
-		r, err := New(context.Background(), test.in, test.batchTimespan)
-		switch {
-		case test.wantErr && err == nil:
-			t.Errorf("TestNew(%s): got err == nil, want err != nil", test.name)
-			continue
-		case !test.wantErr && err != nil:
-			t.Errorf("TestNew(%s): got err == %v, want err == nil", test.name, err)
-			continue
-		case err != nil:
-			continue
-		}
-
-		if r.secrets == nil {
-			t.Errorf("TestNew(%s): got tat.secrets == nil, want tat.secrets != nil", test.name)
-		}
-		if r.batcher == nil {
-			t.Errorf("TestNew(%s): got tat.batcher == nil, want tat.batcher != nil", test.name)
-		}
-		if r.router == nil {
-			t.Errorf("TestNew(%s): got tat.router == nil, want tat.router != nil", test.name)
-		}
-	}
-
 }
 
 func TestAddReader(t *testing.T) {
@@ -113,13 +58,11 @@ func TestAddReader(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		log.Println("test: ", test)
 		r := &Runner{
 			started: test.started,
 		}
 
 		err := r.AddReader(context.Background(), test.reader)
-		log.Println("err: ", err)
 		switch {
 		case test.wantErr && err == nil:
 			t.Errorf("AddReader(%s): got err == nil, want err != nil", test.name)
@@ -153,7 +96,7 @@ func TestAddProcessor(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		in      chan batching.Batches
+		in      chan data.Entry
 		started bool
 		wantErr bool
 	}{
@@ -163,18 +106,18 @@ func TestAddProcessor(t *testing.T) {
 		},
 		{
 			name:    "Error: already started",
-			in:      make(chan batching.Batches, 1),
+			in:      make(chan data.Entry, 1),
 			started: true,
 			wantErr: true,
 		},
 		{
 			name: "Success",
-			in:   make(chan batching.Batches, 1),
+			in:   make(chan data.Entry, 1),
 		},
 	}
 
 	for _, test := range tests {
-		router, err := routing.New(context.Background(), make(chan batching.Batches))
+		router, err := routing.New(context.Background(), make(chan data.Entry))
 		if err != nil {
 			panic(err)
 		}

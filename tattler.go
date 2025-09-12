@@ -14,16 +14,13 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
-	"github.com/Azure/tattler/batching"
 	"github.com/Azure/tattler/data"
 	preprocess "github.com/Azure/tattler/internal/preprocess"
 	"github.com/Azure/tattler/internal/routing"
 	"github.com/Azure/tattler/internal/safety"
 	"go.opentelemetry.io/otel/metric"
 
-	batchingmetrics "github.com/Azure/tattler/internal/metrics/batching"
 	readersmetrics "github.com/Azure/tattler/internal/metrics/readers"
 )
 
@@ -45,11 +42,10 @@ type PreProcessor = preprocess.Processor
 // Runner runs readers and sends the output through a series data modifications and batching until
 // it is sent to data processors.
 type Runner struct {
+	blocking      bool
 	input         chan data.Entry
 	secrets       *safety.Secrets
-	batchOpts     []batching.Option
-	batcher       *batching.Batcher
-	router        *routing.Batches
+	router        *routing.Router
 	readers       []Reader
 	preProcessors []PreProcessor
 
@@ -70,10 +66,10 @@ func WithPreProcessor(p ...PreProcessor) Option {
 	}
 }
 
-// WithBatcherOptions sets the options for the Batcher.
-func WithBatcherOptions(o ...batching.Option) Option {
+// WithBlocking makes the router block when pushing data to a route that is not keeping up.
+func WithBlocking() Option {
 	return func(r *Runner) error {
-		r.batchOpts = append(r.batchOpts, o...)
+		r.blocking = true
 		return nil
 	}
 }
@@ -90,10 +86,8 @@ func WithMeterProvider(m metric.MeterProvider) Option {
 	}
 }
 
-// New constructs a new Runner. The input channel is the ouput of a Reader object. The batchTimespan
-// is the duration to wait before sending a batch of data to the processor. There is also a maximum of
-// 1000 entries that can be sent in a batch. This can be adjust by using WithBatcherOptions(batchingWithBatchSize()).
-func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, options ...Option) (*Runner, error) {
+// New constructs a new Runner. The input channel is the ouput of a Reader object.
+func New(ctx context.Context, in chan data.Entry, options ...Option) (*Runner, error) {
 	if in == nil {
 		return nil, fmt.Errorf("input channel cannot be nil")
 	}
@@ -108,13 +102,6 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 		}
 	}
 
-	if batchTimespan <= 0 {
-		return nil, fmt.Errorf("batchTimespan must be greater than 0")
-	}
-
-	batchingIn := make(chan data.Entry, 1)
-	routerIn := make(chan batching.Batches, 1)
-
 	var secretsIn = in
 
 	if r.preProcessors != nil {
@@ -127,31 +114,27 @@ func New(ctx context.Context, in chan data.Entry, batchTimespan time.Duration, o
 
 	if r.meterProvider != nil {
 		meter := r.meterProvider.Meter("tattler")
-		if err := batchingmetrics.Init(meter); err != nil {
-			return nil, err
-		}
 		if err := readersmetrics.Init(meter); err != nil {
 			return nil, err
 		}
 	}
 
-	secrets, err := safety.New(ctx, secretsIn, batchingIn)
+	secrets, err := safety.New(ctx, secretsIn, in)
 	if err != nil {
 		return nil, err
 	}
 
-	batcher, err := batching.New(ctx, batchingIn, routerIn, batchTimespan, r.batchOpts...)
-	if err != nil {
-		return nil, err
+	var rOpts []routing.Option
+	if r.blocking {
+		rOpts = append(rOpts, routing.WithBlocking())
 	}
 
-	router, err := routing.New(ctx, routerIn)
+	router, err := routing.New(ctx, in, rOpts...)
 	if err != nil {
 		return nil, err
 	}
 
 	r.secrets = secrets
-	r.batcher = batcher
 	r.router = router
 
 	return r, nil
@@ -178,7 +161,7 @@ func (r *Runner) AddReader(ctx context.Context, reader Reader) error {
 
 // AddProcessor registers a processors input to receive Batches data. This cannot be called
 // after Start() has been called.
-func (r *Runner) AddProcessor(ctx context.Context, name string, in chan batching.Batches) error {
+func (r *Runner) AddProcessor(ctx context.Context, name string, in chan data.Entry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
