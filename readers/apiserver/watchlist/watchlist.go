@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
-	"github.com/Azure/tattler/internal/filter/types/watchlist"
-	filter "github.com/Azure/tattler/internal/filter/types/watchlist"
 	metrics "github.com/Azure/tattler/internal/metrics/readers"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/relist"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
@@ -40,9 +38,6 @@ type Reader struct {
 
 	clientset     kubernetes.Interface
 	retrieveTypes types.Retrieve
-	filter        *watchlist.Filter
-	filterIn      chan watch.Event
-	filterOpts    []watchlist.Option
 	// relistInterval indicates how often we should relist all the objects in the APIServer.
 	// The default is never. The minimum is 1 hour and the maximum is 7 days.
 	// This can only be set via a Constructor option.
@@ -73,14 +68,6 @@ type Reader struct {
 
 // Option is an option for New(). Unused for now.
 type Option func(*Reader) error
-
-// WithFilterSize sets the initial size of the filter map.
-func WithFilterSize(size int) Option {
-	return func(c *Reader) error {
-		c.filterOpts = append(c.filterOpts, watchlist.WithSized(size))
-		return nil
-	}
-}
 
 // WithRelist will set a duration in which we will relist all the objects in the APIServer using List() API calls.
 // This is useful to prevent split brain scenarios where the APIServer and tattler have
@@ -190,7 +177,6 @@ func (r *Reader) close(ctx context.Context) error {
 	r.cancelWatches()
 
 	_ = r.waitWatchers.Wait(ctx)
-	close(r.filterIn)
 	close(r.spawnCh)
 	return nil
 }
@@ -230,10 +216,6 @@ func (r *Reader) Run(ctx context.Context) (err error) {
 			r.close(ctx)
 		}
 	}()
-
-	if err := r.setupFilter(ctx); err != nil {
-		return fmt.Errorf("error setting up cache: %v", err)
-	}
 
 	ctx, r.cancelWatches = context.WithCancel(context.WithoutCancel(ctx))
 
@@ -302,18 +284,6 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt t
 	}
 	close(finished)
 	return ctx.Err()
-}
-
-// setupFilter sets up the filter cache for the Reader.
-func (r *Reader) setupFilter(ctx context.Context) error {
-	r.filterIn = make(chan watch.Event, 1)
-
-	var err error
-	r.filter, err = filter.New(ctx, r.filterIn, r.dataCh, r.filterOpts...)
-	if err != nil {
-		return fmt.Errorf("error creating cache: %v", err)
-	}
-	return nil
 }
 
 var spawnReqMaker = &promises.Maker[spawnWatcher, watch.Interface]{}
@@ -468,7 +438,12 @@ func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper 
 			context.Log(ctx).Error(fmt.Sprintf("Watch Error: %v", event.Object))
 			return "", nil
 		}
-		r.filterIn <- event
+		entry, err := data.WatchEventToEntry(event)
+		if err != nil {
+			context.Log(ctx).Error(fmt.Sprintf("error converting watch event to entry: %v", err))
+			return "", nil
+		}
+		r.dataCh <- entry
 	}
 
 	return "", nil

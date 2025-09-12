@@ -22,7 +22,6 @@ We currently pull from the following sources:
 In the future, we plan to support more object types and sources.
 
 Tattler provides a few key features over simply calling the API yourself:
-- Tattler is configured to remove duplicates in non-informer sources at a a much cheaper price point in terms of memory
 - Tattler can be used to filter fields(or change/add to them), filter object types, and filter sources
 - Tattler can be configured to read the information from multiple sources
 - Tattler removes all Pod container environment variables that might contain secrets^*

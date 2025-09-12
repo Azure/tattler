@@ -13,6 +13,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 )
 
 var (
@@ -197,6 +198,24 @@ func MustNewEntry[T runtime.Object](obj T, st SourceType, ct ChangeType) Entry {
 		panic(err)
 	}
 	return e
+}
+
+// WatchEventToEntry converts a watch.Event to an Entry.
+func WatchEventToEntry(event watch.Event) (Entry, error) {
+	var e Entry
+	var err error
+
+	switch event.Type {
+	case watch.Added:
+		e, err = NewEntry(event.Object, STWatchList, CTAdd)
+	case watch.Modified:
+		e, err = NewEntry(event.Object, STWatchList, CTUpdate)
+	case watch.Deleted:
+		e, err = NewEntry(event.Object, STWatchList, CTDelete)
+	default:
+		err = fmt.Errorf("unknown event type: %v", event.Type)
+	}
+	return e, err
 }
 
 // UID returns the UID of the underlying object.

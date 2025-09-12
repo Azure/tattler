@@ -22,49 +22,45 @@ package routing
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 
-	"github.com/Azure/tattler/batching"
+	"github.com/Azure/tattler/data"
 	"github.com/gostdlib/base/context"
-
-	"github.com/gostdlib/concurrency/prim/wait"
 )
 
 type route struct {
-	out  chan batching.Batches
+	out  chan data.Entry
 	name string
 }
 
 type routes []route
 
-// Batches routes batches to registered destinations.
-type Batches struct {
-	input   chan batching.Batches
-	routes  routes
-	started bool
+// Router routes batches to registered destinations.
+type Router struct {
+	in       chan data.Entry
+	routes   routes
+	started  bool
+	blocking bool
 }
 
 // Option is an optional argument to New().
-type Option func(b *Batches) error
+type Option func(b *Router) error
 
-// WithLogger sets Batches to use a custom Logger.
-func WithLogger(l *slog.Logger) Option {
-	return func(b *Batches) error {
-		if l == nil {
-			return fmt.Errorf("WithLogger does not accept a nil *slog.Logger")
-		}
+// WithBlocking makes the router block when pushing data to a route that is not keeping up.
+func WithBlocking() Option {
+	return func(b *Router) error {
+		b.blocking = true
 		return nil
 	}
 }
 
-// New is the constructor for Batches.
-func New(ctx context.Context, input chan batching.Batches, options ...Option) (*Batches, error) {
-	if input == nil {
+// New is the constructor for Router.
+func New(ctx context.Context, in chan data.Entry, options ...Option) (*Router, error) {
+	if in == nil {
 		return nil, errors.New("routing.New: input channel cannot be nil")
 	}
 
-	b := &Batches{
-		input:  input,
+	b := &Router{
+		in:     in,
 		routes: routes{},
 	}
 
@@ -79,7 +75,7 @@ func New(ctx context.Context, input chan batching.Batches, options ...Option) (*
 
 // Register registers a routeCh for data with a specific date.EntryType and ObjectType.
 // You may register the same combination for different routeCh.
-func (b *Batches) Register(ctx context.Context, name string, ch chan batching.Batches) error {
+func (b *Router) Register(ctx context.Context, name string, ch chan data.Entry) error {
 	if b.started {
 		return fmt.Errorf("routing.Batches.Register: cannot Register a route after Start() is called")
 	}
@@ -95,7 +91,7 @@ func (b *Batches) Register(ctx context.Context, name string, ch chan batching.Ba
 }
 
 // Exists returns true if a route with the given name exists.
-func (b *Batches) Exists(name string) bool {
+func (b *Router) Exists(name string) bool {
 	for _, r := range b.routes {
 		if r.name == name {
 			return true
@@ -105,34 +101,33 @@ func (b *Batches) Exists(name string) bool {
 }
 
 // Start starts routing data coming from input. This can be stopped by closing the input channel.
-func (b *Batches) Start(ctx context.Context) error {
+func (b *Router) Start(ctx context.Context) error {
 	if len(b.routes) == 0 {
 		return errors.New("routing.Batches: cannot start without registered routes")
 	}
 	ctx = context.WithoutCancel(ctx)
 	b.started = true
 
-	g := wait.Group{}
-	g.Go(ctx, func(ctx context.Context) error {
-		b.handleInput(ctx)
-		return nil
-	})
-
-	go func() {
-		g.Wait(ctx)
-		for _, r := range b.routes {
-			close(r.out)
-		}
-	}()
+	context.Tasks(ctx).Once(
+		ctx,
+		"handleInput",
+		func(ctx context.Context) error {
+			b.handleInput(ctx)
+			for _, r := range b.routes {
+				close(r.out)
+			}
+			return nil
+		},
+	)
 
 	return nil
 }
 
 // handleInput receives data on the input channel and pushes it to the appropriate receivers.
-func (b *Batches) handleInput(ctx context.Context) {
-	for batches := range b.input {
+func (b *Router) handleInput(ctx context.Context) {
+	for entry := range b.in {
 		for _, r := range b.routes {
-			if err := b.push(ctx, r, batches); err != nil {
+			if err := b.push(ctx, r, entry); err != nil {
 				context.Log(ctx).Error(err.Error())
 			}
 		}
@@ -140,9 +135,18 @@ func (b *Batches) handleInput(ctx context.Context) {
 }
 
 // push pushes a batches to a route.
-func (b *Batches) push(ctx context.Context, r route, batches batching.Batches) error {
+func (b *Router) push(ctx context.Context, r route, entry data.Entry) error {
+	if b.blocking {
+		select {
+		case r.out <- entry:
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("routing.Batches.push: context canceled while pushing to %s: %w", r.name, context.Cause(ctx))
+		}
+	}
+
 	select {
-	case r.out <- batches:
+	case r.out <- entry:
 	default:
 		return fmt.Errorf("routing.Batches.push: dropping data to slow receiver(%s)", r.name)
 	}

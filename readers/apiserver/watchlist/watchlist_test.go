@@ -74,13 +74,6 @@ func TestNew(t *testing.T) {
 			wantErr:       false,
 		},
 		{
-			name:          "Success: with filter size option",
-			clientset:     clientset,
-			retrieveTypes: types.RTPod,
-			opts:          []Option{WithFilterSize(1000)},
-			wantErr:       false,
-		},
-		{
 			name:          "Success: with relist option",
 			clientset:     clientset,
 			retrieveTypes: types.RTPod,
@@ -182,11 +175,11 @@ func TestClose(t *testing.T) {
 	for _, test := range tests {
 		didCancel := false
 		r := &Reader{
-			started:  test.started,
-			closeCh:  make(chan struct{}),
-			filterIn: make(chan watch.Event, 1),
-			cancel:   func() { didCancel = true },
-			spawnCh:  make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			started: test.started,
+			closeCh: make(chan struct{}),
+			dataCh:  make(chan data.Entry, 1),
+			cancel:  func() { didCancel = true },
+			spawnCh: make(chan promises.Promise[spawnWatcher, watch.Interface]),
 		}
 
 		if test.started {
@@ -482,25 +475,6 @@ func TestRun(t *testing.T) {
 	}
 }
 
-func TestSetupCache(t *testing.T) {
-	t.Parallel()
-
-	r := &Reader{
-		dataCh: make(chan data.Entry, 1),
-	}
-	if err := r.setupFilter(context.Background()); err != nil {
-		t.Fatalf("TestSetupCache: got err == %v, want err == nil", err)
-	}
-	defer close(r.filterIn)
-
-	if r.filter == nil {
-		t.Errorf("TestSetupCache: got cache == nil, want cache != nil")
-	}
-	if r.filterIn == nil {
-		t.Errorf("TestSetupCache: got cacheIn == nil, want cacheIn != nil")
-	}
-}
-
 // Note that this stack overflows if -race is used. See individual tests for more information.
 // The test passes and this does not happen in production.
 func TestWatch(t *testing.T) {
@@ -613,7 +587,7 @@ func TestWatchEvent(t *testing.T) {
 		ch          chan watch.Event
 		wantRV      string
 		event       watch.Event
-		wantEvent   watch.Event
+		wantEntry   data.Entry
 		wantErr     bool
 		wantStopper bool
 	}{
@@ -650,17 +624,12 @@ func TestWatchEvent(t *testing.T) {
 				Type:   watch.Added,
 				Object: &corev1.Pod{},
 			},
-			wantEvent: watch.Event{
-				Type:   watch.Added,
-				Object: &corev1.Pod{},
-			},
+			wantEntry: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTAdd),
 		},
 	}
 
 	for _, test := range tests {
-		r := &Reader{
-			filterIn: make(chan watch.Event, 1),
-		}
+		r := &Reader{dataCh: make(chan data.Entry, 1)}
 		if test.event != (watch.Event{}) {
 			test.ch <- test.event
 		}
@@ -687,8 +656,8 @@ func TestWatchEvent(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if !reflect.ValueOf(test.wantEvent).IsZero() {
-			if diff := pretty.Compare(test.wantEvent, <-r.filterIn); diff != "" {
+		if !reflect.ValueOf(test.wantEntry).IsZero() {
+			if diff := pretty.Compare(test.wantEntry, <-r.dataCh); diff != "" {
 				t.Errorf("TestWatchEvent(%s): -want/+got:\n%s", test.name, diff)
 			}
 		}
