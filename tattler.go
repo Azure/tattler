@@ -42,6 +42,7 @@ type PreProcessor = preprocess.Processor
 // Runner runs readers and sends the output through a series data modifications and batching until
 // it is sent to data processors.
 type Runner struct {
+	blocking      bool
 	input         chan data.Entry
 	secrets       *safety.Secrets
 	router        *routing.Router
@@ -65,6 +66,14 @@ func WithPreProcessor(p ...PreProcessor) Option {
 	}
 }
 
+// WithBlocking makes the router block when pushing data to a route that is not keeping up.
+func WithBlocking() Option {
+	return func(r *Runner) error {
+		r.blocking = true
+		return nil
+	}
+}
+
 // WithMeterProvider sets the meter provider with which to register metrics.
 // Defaults to nil, in which case metrics won't be registered.
 func WithMeterProvider(m metric.MeterProvider) Option {
@@ -77,9 +86,7 @@ func WithMeterProvider(m metric.MeterProvider) Option {
 	}
 }
 
-// New constructs a new Runner. The input channel is the ouput of a Reader object. The batchTimespan
-// is the duration to wait before sending a batch of data to the processor. There is also a maximum of
-// 1000 entries that can be sent in a batch. This can be adjust by using WithBatcherOptions(batchingWithBatchSize()).
+// New constructs a new Runner. The input channel is the ouput of a Reader object.
 func New(ctx context.Context, in chan data.Entry, options ...Option) (*Runner, error) {
 	if in == nil {
 		return nil, fmt.Errorf("input channel cannot be nil")
@@ -117,7 +124,12 @@ func New(ctx context.Context, in chan data.Entry, options ...Option) (*Runner, e
 		return nil, err
 	}
 
-	router, err := routing.New(ctx, in)
+	var rOpts []routing.Option
+	if r.blocking {
+		rOpts = append(rOpts, routing.WithBlocking())
+	}
+
+	router, err := routing.New(ctx, in, rOpts...)
 	if err != nil {
 		return nil, err
 	}
