@@ -302,16 +302,6 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spawnWatchers []s
 	}
 
 	watchers := make([]watch.Interface, len(spawnWatchers))
-	defer func() {
-		if err != nil {
-			for _, watcher := range watchers {
-				if watcher != nil {
-					watcher.Stop()
-				}
-			}
-		}
-	}()
-
 	for i, sp := range spawnWatchers {
 		w, err := r.getWatcher(ctx, rt, sp)
 		if err != nil {
@@ -322,6 +312,7 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spawnWatchers []s
 		r.waitWatchers.Go(
 			ctx,
 			func(ctx context.Context) error {
+				defer w.Stop()
 				return r.handleWatcher(ctx, rt, w, sp)
 			},
 		)
