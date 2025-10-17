@@ -475,6 +475,12 @@ func TestRun(t *testing.T) {
 	}
 }
 
+type watcherWithOnlyStop struct {
+	watch.Interface
+}
+
+func (w watcherWithOnlyStop) Stop() {}
+
 // Note that this stack overflows if -race is used. See individual tests for more information.
 // The test passes and this does not happen in production.
 func TestWatch(t *testing.T) {
@@ -514,7 +520,7 @@ func TestWatch(t *testing.T) {
 			ctx:  ctx,
 			spawnWatchers: []spawnWatcher{
 				func(options metav1.ListOptions) (watch.Interface, error) {
-					return struct{ watch.Interface }{}, nil
+					return watcherWithOnlyStop{}, nil
 				},
 			},
 			eventWatcher: func(ctx context.Context, watcher watch.Interface) (string, error) {
