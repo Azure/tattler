@@ -23,7 +23,6 @@ const (
 var (
 	watchEventCount metric.Int64Counter
 	dataEntryCount  metric.Int64Counter
-	staleDataCount  metric.Int64Counter
 )
 
 func metricName(name string) string {
@@ -53,20 +52,6 @@ func WatchEvent(ctx context.Context, e watch.Event) {
 	)
 	if watchEventCount != nil {
 		watchEventCount.Add(ctx, 1, opt)
-	}
-}
-
-// StaleData increases the dataEntryCount metric when the data is stale and dropped by the filter.
-func StaleData(ctx context.Context, e data.Entry) {
-	opt := api.WithAttributes(
-		attribute.Key(keepLabel).String("false"),
-		attribute.Key(sourceTypeLabel).String(e.SourceType().String()),
-		attribute.Key(sourceTypeLabel).String(e.SourceType().String()),
-		attribute.Key(changeTypeLabel).String(e.ChangeType().String()),
-		attribute.Key(objectTypeLabel).String(e.ObjectType().String()),
-	)
-	if dataEntryCount != nil {
-		dataEntryCount.Add(ctx, 1, opt)
 	}
 }
 
