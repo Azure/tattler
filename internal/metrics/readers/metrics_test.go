@@ -43,17 +43,15 @@ func TestWatchListMetrics(t *testing.T) {
 				for _, event := range events {
 					WatchEvent(ctx, event)
 					DataEntry(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTUpdate))
-					StaleData(ctx, data.MustNewEntry(&corev1.Pod{}, data.STInformer, data.CTDelete))
 				}
 			},
-			wantMetricCount: 4,
+			wantMetricCount: 3,
 		},
 		{
 			name: "batching metrics not initialized",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
 				WatchEvent(ctx, watch.Event{Type: watch.Added})
 				DataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
-				StaleData(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
 			},
 			wantMetricCount: 1,
 		},
