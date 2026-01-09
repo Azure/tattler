@@ -88,7 +88,6 @@ func WithRelist(d time.Duration) Option {
 
 // rtMap is a dynamically created map of RetrieveType.
 var rtMap = map[types.Retrieve]func(ctx context.Context) []spawnWatcher{}
-var rtMapOnce sync.Once
 
 func init() {
 	var i uint32 = 0
@@ -244,14 +243,6 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt t
 	finished := make(chan struct{})
 	timer := time.After(30 * time.Second)
 
-	go func() {
-		select {
-		case <-finished:
-		case <-timer:
-			cancel()
-		}
-	}()
-
 	var spanWatchers []spawnWatcher
 	switch rt {
 	case types.RTNamespace:
@@ -263,6 +254,7 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt t
 	case types.RTPersistentVolume:
 		spanWatchers = r.createPersistentVolumesWatcher(ctx)
 	case types.RTRBAC:
+		timer = time.After(2 * time.Minute) // This one spawns 4 watchers
 		spanWatchers = r.createRBACWatcher(ctx)
 	case types.RTService:
 		spanWatchers = r.createServicesWatcher(ctx)
@@ -275,6 +267,14 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt t
 	default:
 		return fmt.Errorf("unknown resource type: %v", rt)
 	}
+
+	go func() {
+		select {
+		case <-finished:
+		case <-timer:
+			cancel()
+		}
+	}()
 
 	if err := r.watch(ctx, rt, spanWatchers); err != nil {
 		return fmt.Errorf("error starting %s watcher: %v", rt, err)
