@@ -23,27 +23,19 @@ type genericLister[T runtime.Object] func(ctx context.Context, options metav1.Li
 // also will handle exponential backoff retries for retriable errors.
 func adapter[R runtime.Object](f genericLister[R]) listPage {
 	return func(ctx context.Context, options metav1.ListOptions) ([]data.Entry, string, error) {
-		var entries []data.Entry
-		var continueToken string
-		err := backoff.Retry(
-			ctx,
-			func(ctx context.Context, _ exponential.Record) error {
-				obj, err := f(ctx, options)
-				if err != nil {
-					return err
-				}
-				entries, err = listToEntries(obj)
-				if err != nil {
-					return err
-				}
-				continueToken, err = getContinue(obj)
-				if err != nil {
-					return err
-				}
-				return nil
-			},
-			exponential.WithMaxAttempts(10),
-		)
+		obj, err := f(ctx, options)
+		if err != nil {
+			return nil, "", err
+		}
+		entries, err := listToEntries(obj)
+		if err != nil {
+			return nil, "", err
+		}
+		continueToken, err := getContinue(obj)
+		if err != nil {
+			return nil, "", err
+		}
+
 		return entries, continueToken, err
 	}
 }
