@@ -11,6 +11,7 @@ import (
 	"github.com/gostdlib/base/retry/exponential"
 	"github.com/gostdlib/base/values/generics/promises"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
@@ -120,10 +121,15 @@ func TestMakePagers(t *testing.T) {
 		t.Errorf("TestMakePagers: got %d pagers, want %d", len(pagers), len(expectedTypes))
 	}
 
-	// Test that pagers are functional (not nil)
-	for rt, pager := range pagers {
-		if pager == nil {
-			t.Errorf("TestMakePagers: pager for %v is nil", rt)
+	// Test that pagers are functional (not nil or empty)
+	for rt, pagerSlice := range pagers {
+		if len(pagerSlice) == 0 {
+			t.Errorf("TestMakePagers: pager slice for %v is empty", rt)
+		}
+		for i, pager := range pagerSlice {
+			if pager == nil {
+				t.Errorf("TestMakePagers: pager[%d] for %v is nil", i, rt)
+			}
 		}
 	}
 }
@@ -137,7 +143,7 @@ func TestRelister(t *testing.T) {
 	tests := []struct {
 		name              string
 		rt                types.Retrieve
-		setupPagers       func() map[types.Retrieve]listPage
+		setupPagers       func() map[types.Retrieve][]listPage
 		setupClientset    func() *fake.Clientset
 		contextSetup      func() (context.Context, context.CancelFunc)
 		wantEntries       int
@@ -151,9 +157,9 @@ func TestRelister(t *testing.T) {
 		{
 			name: "successful list",
 			rt:   types.RTPod,
-			setupPagers: func() map[types.Retrieve]listPage {
-				return map[types.Retrieve]listPage{
-					types.RTPod: fakeListPage(entries, "", nil),
+			setupPagers: func() map[types.Retrieve][]listPage {
+				return map[types.Retrieve][]listPage{
+					types.RTPod: {fakeListPage(entries, "", nil)},
 				}
 			},
 			wantEntries: 3,
@@ -161,18 +167,18 @@ func TestRelister(t *testing.T) {
 		{
 			name: "empty list",
 			rt:   types.RTPod,
-			setupPagers: func() map[types.Retrieve]listPage {
-				return map[types.Retrieve]listPage{
-					types.RTPod: fakeListPage([]data.Entry{}, "", nil),
+			setupPagers: func() map[types.Retrieve][]listPage {
+				return map[types.Retrieve][]listPage{
+					types.RTPod: {fakeListPage([]data.Entry{}, "", nil)},
 				}
 			},
 		},
 		{
 			name: "unknown resource type",
 			rt:   types.Retrieve(999), // Invalid resource type
-			setupPagers: func() map[types.Retrieve]listPage {
-				return map[types.Retrieve]listPage{
-					types.RTPod: fakeListPage(entries, "", nil),
+			setupPagers: func() map[types.Retrieve][]listPage {
+				return map[types.Retrieve][]listPage{
+					types.RTPod: {fakeListPage(entries, "", nil)},
 				}
 			},
 			wantCallErr: true,
@@ -180,9 +186,9 @@ func TestRelister(t *testing.T) {
 		{
 			name: "pager returns error",
 			rt:   types.RTPod,
-			setupPagers: func() map[types.Retrieve]listPage {
-				return map[types.Retrieve]listPage{
-					types.RTPod: fakeListPage(nil, "", errors.New("api error")),
+			setupPagers: func() map[types.Retrieve][]listPage {
+				return map[types.Retrieve][]listPage{
+					types.RTPod: {fakeListPage(nil, "", errors.New("api error"))},
 				}
 			},
 			wantStreamErr: true, // Error comes through channel
@@ -190,15 +196,15 @@ func TestRelister(t *testing.T) {
 		{
 			name: "pagination",
 			rt:   types.RTPod,
-			setupPagers: func() map[types.Retrieve]listPage {
+			setupPagers: func() map[types.Retrieve][]listPage {
 				pods1 := createTestPods(2)
 				entries1 := createTestEntries(pods1)
 				pods2 := createTestPods(1)
 				entries2 := createTestEntries(pods2)
-				
+
 				callCount := 0
-				return map[types.Retrieve]listPage{
-					types.RTPod: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+				return map[types.Retrieve][]listPage{
+					types.RTPod: {func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
 						callCount++
 						switch callCount {
 						case 1:
@@ -208,7 +214,7 @@ func TestRelister(t *testing.T) {
 						default:
 							return nil, "", errors.New("too many calls")
 						}
-					},
+					}},
 				}
 			},
 			wantEntries: 3, // 2 + 1 from pagination
@@ -216,16 +222,16 @@ func TestRelister(t *testing.T) {
 		{
 			name: "context cancellation",
 			rt:   types.RTPod,
-			setupPagers: func() map[types.Retrieve]listPage {
-				return map[types.Retrieve]listPage{
-					types.RTPod: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+			setupPagers: func() map[types.Retrieve][]listPage {
+				return map[types.Retrieve][]listPage{
+					types.RTPod: {func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
 						select {
 						case <-ctx.Done():
 							return nil, "", context.Cause(ctx)
 						case <-time.After(100 * time.Millisecond):
 							return createTestEntries(createTestPods(1)), "", nil
 						}
-					},
+					}},
 				}
 			},
 			contextSetup: func() (context.Context, context.CancelFunc) {
@@ -235,7 +241,7 @@ func TestRelister(t *testing.T) {
 			validateBehavior: func(ctx context.Context, cancel context.CancelFunc, ch chan promises.Response[data.Entry], t *testing.T) {
 				// Cancel context immediately
 				cancel()
-				
+
 				// Read from channel - should get an error
 				var gotError bool
 				for response := range ch {
@@ -248,7 +254,7 @@ func TestRelister(t *testing.T) {
 						break
 					}
 				}
-				
+
 				if !gotError {
 					t.Error("expected error due to context cancellation")
 				}
@@ -257,13 +263,13 @@ func TestRelister(t *testing.T) {
 		{
 			name: "context cancellation during iteration",
 			rt:   types.RTPod,
-			setupPagers: func() map[types.Retrieve]listPage {
+			setupPagers: func() map[types.Retrieve][]listPage {
 				pods := createTestPods(10)
 				entries := createTestEntries(pods)
-				return map[types.Retrieve]listPage{
-					types.RTPod: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+				return map[types.Retrieve][]listPage{
+					types.RTPod: {func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
 						return entries, "", nil
-					},
+					}},
 				}
 			},
 			contextSetup: func() (context.Context, context.CancelFunc) {
@@ -283,11 +289,11 @@ func TestRelister(t *testing.T) {
 						cancel() // Cancel after reading first entry
 					}
 				}
-				
+
 				if !gotError {
 					t.Error("expected error due to context cancellation during iteration")
 				}
-				
+
 				if entryCount == 0 {
 					t.Error("should have read at least one entry before cancellation")
 				}
@@ -304,15 +310,15 @@ func TestRelister(t *testing.T) {
 						UID:       k8stypes.UID("uid-1"),
 					},
 				}
-				
+
 				pod2 := &corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-pod-2", 
+						Name:      "test-pod-2",
 						Namespace: "default",
 						UID:       k8stypes.UID("uid-2"),
 					},
 				}
-				
+
 				return fake.NewSimpleClientset(pod1, pod2)
 			},
 			wantEntries: 2,
@@ -332,11 +338,103 @@ func TestRelister(t *testing.T) {
 			},
 		},
 		{
+			name: "RBAC integration with all four types",
+			rt:   types.RTRBAC,
+			setupClientset: func() *fake.Clientset {
+				role := &rbacv1.Role{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-role",
+						Namespace: "default",
+						UID:       k8stypes.UID("role-uid"),
+					},
+				}
+				roleBinding := &rbacv1.RoleBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-rolebinding",
+						Namespace: "default",
+						UID:       k8stypes.UID("rolebinding-uid"),
+					},
+				}
+				clusterRole := &rbacv1.ClusterRole{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-clusterrole",
+						UID:  k8stypes.UID("clusterrole-uid"),
+					},
+				}
+				clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-clusterrolebinding",
+						UID:  k8stypes.UID("clusterrolebinding-uid"),
+					},
+				}
+				return fake.NewSimpleClientset(role, roleBinding, clusterRole, clusterRoleBinding)
+			},
+			wantEntries: 4,
+			validateEntries: func(entries []data.Entry, t *testing.T) {
+				// Track which object types we've seen
+				seenTypes := make(map[data.ObjectType]bool)
+				for _, entry := range entries {
+					if entry.SourceType() != data.STWatchList {
+						t.Errorf("entry.SourceType() = %v, want %v", entry.SourceType(), data.STWatchList)
+					}
+					if entry.ChangeType() != data.CTSnapshot {
+						t.Errorf("entry.ChangeType() = %v, want %v", entry.ChangeType(), data.CTSnapshot)
+					}
+					seenTypes[entry.ObjectType()] = true
+				}
+				// Verify we got all four RBAC types
+				expectedTypes := []data.ObjectType{data.OTRole, data.OTRoleBinding, data.OTClusterRole, data.OTClusterRoleBinding}
+				for _, ot := range expectedTypes {
+					if !seenTypes[ot] {
+						t.Errorf("missing expected object type %v in RBAC entries", ot)
+					}
+				}
+			},
+		},
+		{
+			name: "multiple listers for single resource type",
+			rt:   types.RTRBAC,
+			setupPagers: func() map[types.Retrieve][]listPage {
+				// Simulate RBAC with multiple listers (Roles, RoleBindings, ClusterRoles, ClusterRoleBindings)
+				pods1 := createTestPods(2)
+				entries1 := createTestEntries(pods1)
+				pods2 := createTestPods(3)
+				entries2 := createTestEntries(pods2)
+				pods3 := createTestPods(1)
+				entries3 := createTestEntries(pods3)
+				return map[types.Retrieve][]listPage{
+					types.RTRBAC: {
+						fakeListPage(entries1, "", nil),
+						fakeListPage(entries2, "", nil),
+						fakeListPage(entries3, "", nil),
+					},
+				}
+			},
+			wantEntries: 6, // 2 + 3 + 1 from three listers
+		},
+		{
+			name: "multiple listers with error in second lister",
+			rt:   types.RTRBAC,
+			setupPagers: func() map[types.Retrieve][]listPage {
+				pods1 := createTestPods(2)
+				entries1 := createTestEntries(pods1)
+				return map[types.Retrieve][]listPage{
+					types.RTRBAC: {
+						fakeListPage(entries1, "", nil),
+						fakeListPage(nil, "", errors.New("second lister error")),
+						fakeListPage(createTestEntries(createTestPods(1)), "", nil), // Should not be reached
+					},
+				}
+			},
+			wantEntries:   2, // Only first lister's entries before error
+			wantStreamErr: true,
+		},
+		{
 			name: "channel closure",
 			rt:   types.RTPod,
-			setupPagers: func() map[types.Retrieve]listPage {
-				return map[types.Retrieve]listPage{
-					types.RTPod: fakeListPage(createTestEntries(createTestPods(1)), "", nil),
+			setupPagers: func() map[types.Retrieve][]listPage {
+				return map[types.Retrieve][]listPage{
+					types.RTPod: {fakeListPage(createTestEntries(createTestPods(1)), "", nil)},
 				}
 			},
 			wantEntries:         1,
@@ -538,8 +636,8 @@ func BenchmarkRelisterList(b *testing.B) {
 	entries := createTestEntries(pods)
 
 	r := &Relister{
-		pagers: map[types.Retrieve]listPage{
-			types.RTPod: fakeListPage(entries, "", nil),
+		pagers: map[types.Retrieve][]listPage{
+			types.RTPod: {fakeListPage(entries, "", nil)},
 		},
 	}
 
@@ -577,8 +675,8 @@ func BenchmarkRelisterListWithPagination(b *testing.B) {
 	}
 
 	r := &Relister{
-		pagers: map[types.Retrieve]listPage{
-			types.RTPod: paginatedLister,
+		pagers: map[types.Retrieve][]listPage{
+			types.RTPod: {paginatedLister},
 		},
 	}
 
