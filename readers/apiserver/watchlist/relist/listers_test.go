@@ -327,47 +327,6 @@ func TestListToEntriesReflection(t *testing.T) {
 	}
 }
 
-func TestAdapterRetryBehavior(t *testing.T) {
-	ctx := context.Background()
-	callCount := 0
-
-	// Create a lister that fails on first call, succeeds on second
-	retryLister := func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error) {
-		callCount++
-		if callCount == 1 {
-			// Return a retriable error (no exponential.ErrPermanent wrapping)
-			return nil, errors.New("TestAdapterRetryBehavior: temporary failure")
-		}
-		return &fakeListResult{
-			Items: []*corev1.Pod{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "pod1",
-						UID:  types.UID("uid1"),
-					},
-				},
-			},
-		}, nil
-	}
-
-	// Test the genericLister directly with adapter
-	adaptedLister := adapter(retryLister)
-	entries, _, err := adaptedLister(ctx, metav1.ListOptions{})
-
-	if err != nil {
-		t.Errorf("TestAdapterRetryBehavior: adapter() should eventually succeed with retry, got error: %v", err)
-	}
-
-	if len(entries) != 1 {
-		t.Errorf("TestAdapterRetryBehavior: adapter() got %d entries, want 1", len(entries))
-	}
-
-	if callCount < 2 {
-		t.Errorf("TestAdapterRetryBehavior: Expected at least 2 calls due to retry, got %d", callCount)
-	}
-}
-
-// Benchmark tests
 func BenchmarkListToEntries(b *testing.B) {
 	// Create a large list for benchmarking
 	items := make([]*corev1.Pod, 1000)

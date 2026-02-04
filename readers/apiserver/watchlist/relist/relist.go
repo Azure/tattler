@@ -33,7 +33,7 @@ type listPage func(ctx context.Context, opts metav1.ListOptions) (list []data.En
 // Relister will retrieve data.Entry objects from the Kubernetes API server using the client-go library
 // given a resource type. It will handle pagination and context cancellation.
 type Relister struct {
-	pagers map[types.Retrieve]listPage
+	pagers map[types.Retrieve][]listPage
 }
 
 // New creates a new Relister.
@@ -47,18 +47,23 @@ func New(clientset ClientsetInterface) (*Relister, error) {
 }
 
 // makePagers creates a map of ListPage functions for each resource type. You use these via the List function
-// to get a channel of data.Entry objects.
-func makePagers(clientset ClientsetInterface) map[types.Retrieve]listPage {
-	return map[types.Retrieve]listPage{
-		types.RTNode:              adapter(clientset.CoreV1().Nodes().List),
-		types.RTPod:               adapter(clientset.CoreV1().Pods(metav1.NamespaceAll).List),
-		types.RTNamespace:         adapter(clientset.CoreV1().Namespaces().List),
-		types.RTPersistentVolume:  adapter(clientset.CoreV1().PersistentVolumes().List),
-		types.RTRBAC:              adapter(clientset.RbacV1().Roles(metav1.NamespaceAll).List),
-		types.RTService:           adapter(clientset.CoreV1().Services(metav1.NamespaceAll).List),
-		types.RTDeployment:        adapter(clientset.AppsV1().Deployments(metav1.NamespaceAll).List),
-		types.RTIngressController: adapter(clientset.NetworkingV1().Ingresses(metav1.NamespaceAll).List),
-		types.RTEndpoint:          adapter(clientset.CoreV1().Endpoints(metav1.NamespaceAll).List),
+// to get a channel of data.Entry objects. Some resource types (like RBAC) have multiple listers.
+func makePagers(clientset ClientsetInterface) map[types.Retrieve][]listPage {
+	return map[types.Retrieve][]listPage{
+		types.RTNode:              {adapter(clientset.CoreV1().Nodes().List)},
+		types.RTPod:               {adapter(clientset.CoreV1().Pods(metav1.NamespaceAll).List)},
+		types.RTNamespace:         {adapter(clientset.CoreV1().Namespaces().List)},
+		types.RTPersistentVolume:  {adapter(clientset.CoreV1().PersistentVolumes().List)},
+		types.RTRBAC: {
+			adapter(clientset.RbacV1().Roles(metav1.NamespaceAll).List),
+			adapter(clientset.RbacV1().RoleBindings(metav1.NamespaceAll).List),
+			adapter(clientset.RbacV1().ClusterRoles().List),
+			adapter(clientset.RbacV1().ClusterRoleBindings().List),
+		},
+		types.RTService:           {adapter(clientset.CoreV1().Services(metav1.NamespaceAll).List)},
+		types.RTDeployment:        {adapter(clientset.AppsV1().Deployments(metav1.NamespaceAll).List)},
+		types.RTIngressController: {adapter(clientset.NetworkingV1().Ingresses(metav1.NamespaceAll).List)},
+		types.RTEndpoint:          {adapter(clientset.CoreV1().Endpoints(metav1.NamespaceAll).List)},
 	}
 }
 
@@ -66,60 +71,60 @@ func makePagers(clientset ClientsetInterface) map[types.Retrieve]listPage {
 // and context cancellation. If the context is cancelled, the channel will be closed with an error on
 // the last entry. You should read all entries from the channel until it is closed.
 func (r *Relister) List(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error) {
-	lp, ok := r.pagers[rt]
+	listers, ok := r.pagers[rt]
 	if !ok {
 		return nil, fmt.Errorf("no pager found for resource type %s: %w", rt, exponential.ErrPermanent)
 	}
-	return r.list(ctx, lp), nil
+	return r.listAll(ctx, listers), nil
 }
 
-// list takes a ListPage function and returns a channel of data.Entry objects. It will
-// handle pagination and context cancellation. If the context is cancelled, the channel will be closed
-// and any error will be sent to the channel. If there are no more pages, the channel will be closed.
-func (r *Relister) list(ctx context.Context, lister listPage) chan promises.Response[data.Entry] {
-
-	var (
-		ch            = make(chan promises.Response[data.Entry], 1)
-		list          []data.Entry
-		continueToken string
-		err           error
-	)
+// listAll takes multiple ListPage functions and returns a single channel of data.Entry objects.
+// It spawns a goroutine for each lister and merges the results. The channel is closed when all
+// listers have completed.
+func (r *Relister) listAll(ctx context.Context, listers []listPage) chan promises.Response[data.Entry] {
+	ch := make(chan promises.Response[data.Entry], 1)
 
 	context.Pool(ctx).Submit(
 		ctx,
 		func() {
 			defer close(ch)
-			for {
-				list, continueToken, err = retryableList(
-					ctx,
-					lister,
-					metav1.ListOptions{
-						Limit:    100,
-						Continue: continueToken,
-					},
-				)
-				if err != nil {
+			for _, lister := range listers {
+				if err := r.listOne(ctx, lister, ch); err != nil {
 					ch <- promises.Response[data.Entry]{Err: err}
 					return
-				}
-
-				for _, entry := range list {
-					select {
-					case <-ctx.Done():
-						ch <- promises.Response[data.Entry]{Err: context.Cause(ctx)}
-						return
-					case ch <- promises.Response[data.Entry]{V: entry}:
-					}
-				}
-
-				if continueToken == "" {
-					break
 				}
 			}
 		},
 	)
 
 	return ch
+}
+
+// listOne lists all entries from a single lister and sends them to the channel.
+// It handles pagination and returns an error if the context is cancelled or listing fails.
+func (r *Relister) listOne(ctx context.Context, lister listPage, ch chan promises.Response[data.Entry]) error {
+	var continueToken string
+
+	for {
+		list, cont, err := retryableList(ctx, lister, metav1.ListOptions{Limit: 100, Continue: continueToken})
+		if err != nil {
+			return err
+		}
+
+		for _, entry := range list {
+			select {
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			case ch <- promises.Response[data.Entry]{V: entry}:
+			}
+		}
+
+		continueToken = cont
+		if continueToken == "" {
+			break
+		}
+	}
+	return nil
 }
 
 var back = exponential.Must(exponential.New())

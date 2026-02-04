@@ -11,8 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-var backoff = exponential.Must(exponential.New())
-
 // genericLister is a function that lists resources of type T. It can be any of the common
 // client list functions that return a concrete type, such as *corev1.NamespaceList.
 // So for example, r.clientset.CoreV1().Namespaces().List is a genericLister[*corev1.NamespaceList].
@@ -23,27 +21,19 @@ type genericLister[T runtime.Object] func(ctx context.Context, options metav1.Li
 // also will handle exponential backoff retries for retriable errors.
 func adapter[R runtime.Object](f genericLister[R]) listPage {
 	return func(ctx context.Context, options metav1.ListOptions) ([]data.Entry, string, error) {
-		var entries []data.Entry
-		var continueToken string
-		err := backoff.Retry(
-			ctx,
-			func(ctx context.Context, _ exponential.Record) error {
-				obj, err := f(ctx, options)
-				if err != nil {
-					return err
-				}
-				entries, err = listToEntries(obj)
-				if err != nil {
-					return err
-				}
-				continueToken, err = getContinue(obj)
-				if err != nil {
-					return err
-				}
-				return nil
-			},
-			exponential.WithMaxAttempts(10),
-		)
+		obj, err := f(ctx, options)
+		if err != nil {
+			return nil, "", err
+		}
+		entries, err := listToEntries(obj)
+		if err != nil {
+			return nil, "", err
+		}
+		continueToken, err := getContinue(obj)
+		if err != nil {
+			return nil, "", err
+		}
+
 		return entries, continueToken, err
 	}
 }
