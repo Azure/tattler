@@ -11,8 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-var backoff = exponential.Must(exponential.New())
-
 // genericLister is a function that lists resources of type T. It can be any of the common
 // client list functions that return a concrete type, such as *corev1.NamespaceList.
 // So for example, r.clientset.CoreV1().Namespaces().List is a genericLister[*corev1.NamespaceList].
