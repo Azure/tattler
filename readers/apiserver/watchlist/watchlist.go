@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Azure/tattler/data"
 	metrics "github.com/Azure/tattler/internal/metrics/readers"
@@ -46,6 +47,7 @@ type Reader struct {
 
 	spawnCh           chan promises.Promise[spawnWatcher, watch.Interface]
 	watcherSpawnDelay time.Duration
+	bookmarking       bool
 
 	dataCh        chan data.Entry
 	waitWatchers  sync.Group
@@ -113,6 +115,11 @@ func New(ctx context.Context, clientset kubernetes.Interface, retrieveTypes type
 		return nil, fmt.Errorf("error creating relister: %v", err)
 	}
 
+	ver, err := majorMinor(clientset)
+	if err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 
 	r := &Reader{
@@ -130,6 +137,10 @@ func New(ctx context.Context, clientset kubernetes.Interface, retrieveTypes type
 		if err := opt(r); err != nil {
 			return nil, err
 		}
+	}
+
+	if ver[1] >= 30 {
+		r.bookmarking = true
 	}
 
 	// Make sure they passed a valid retrieveTypes.
@@ -325,14 +336,15 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spawnWatchers []s
 // an error and Context is not cancelled, our retrier will try and get a new watcher. This will block until the context
 // is canceled.
 func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, w watch.Interface, sp spawnWatcher) error {
+	var resourceVersion string
 	for {
-		// This blocks until watchEvents returns, which is when a watcher is closed.
-		var err error
-		_, err = r.watchEvents(ctx, w)
+		rv, err := r.watchEvents(ctx, w)
+		if rv != "" {
+			resourceVersion = rv
+		}
 		if err != nil {
 			context.Log(ctx).Error(fmt.Sprintf("error watching %v events: %v", rt, err))
 		}
-		// This would indicate that the watcher was intentionally closed.
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -340,9 +352,17 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, w watch.I
 		err = back.Retry(
 			ctx,
 			func(ctx context.Context, _ exponential.Record) error {
+				wrapped := sp
+				if r.bookmarking && resourceVersion != "" {
+					wrapped = func(options metav1.ListOptions) (watch.Interface, error) {
+						options.ResourceVersion = resourceVersion
+						return sp(options)
+					}
+				}
 				var err error
-				w, err = r.getWatcher(ctx, rt, sp)
+				w, err = r.getWatcher(ctx, rt, wrapped)
 				if err != nil {
+					resourceVersion = ""
 					context.Log(ctx).Error(fmt.Sprintf("error re-creating watcher(%v): %v", rt, err))
 				}
 				return err
@@ -356,16 +376,18 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, w watch.I
 	panic("unreachable")
 }
 
-var spawnOptions = metav1.ListOptions{
-	ResourceVersion: "",
-	Watch:           true,
-}
-
 // connectWatcher takes a request to create a watcher and creates it, sending the result back on the promise.
 // This prevents thundering herds of watchers trying to connect at the same time.
 func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[spawnWatcher, watch.Interface]) {
+	so := metav1.ListOptions{Watch: true}
+	if r.bookmarking {
+		// The resourceVersion is added by handleWatcher() during restarts.
+		so.AllowWatchBookmarks = true
+		so.ResourceVersionMatch = metav1.ResourceVersionMatchNotOlderThan
+	}
+
 	for req := range ch {
-		watcher, err := req.In(spawnOptions)
+		watcher, err := req.In(so)
 		_ = req.Set(ctx, watcher, err) // Error only happens on context cancelation
 
 		// We have no way in which we can wait for a watcher to finish its initial pool of events because we
@@ -526,4 +548,24 @@ func (r *Reader) performRelist(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func majorMinor(clientset kubernetes.Interface) ([2]int, error) {
+	nfo, err := clientset.Discovery().ServerVersion()
+	if err != nil {
+		return [2]int{}, fmt.Errorf("can't determine k8 version: %w", err)
+	}
+
+	return [2]int{minorInt(nfo.Major), minorInt(nfo.Minor)}, nil
+}
+
+func minorInt(s string) int {
+	n := 0
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			break
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
 }
