@@ -139,7 +139,7 @@ func New(ctx context.Context, clientset kubernetes.Interface, retrieveTypes type
 		}
 	}
 
-	if ver[1] >= 30 {
+	if ver[0] != 1 || ver[1] >= 30 {
 		r.bookmarking = true
 	}
 
@@ -550,16 +550,31 @@ func (r *Reader) performRelist(ctx context.Context) error {
 	return nil
 }
 
+// majorMinor extracts the major and minor version of the K8 cluster.
 func majorMinor(clientset kubernetes.Interface) ([2]int, error) {
 	nfo, err := clientset.Discovery().ServerVersion()
 	if err != nil {
 		return [2]int{}, fmt.Errorf("can't determine k8 version: %w", err)
 	}
 
-	return [2]int{minorInt(nfo.Major), minorInt(nfo.Minor)}, nil
+	return [2]int{convertToDecimal(nfo.Major), convertToDecimal(nfo.Minor)}, nil
 }
 
-func minorInt(s string) int {
+/*
+convertToDecimal tries to deal with the fact that K8 hates you.
+In K8, we love being stringly typed.  Instead of having concrete representations and a struct that means something,
+we get strings for each part (major/minor) along with other nonsense. So you can get things like this (along with whatever
+other nonsense people come up with):
+  - Major = "1"
+  - Minor = "28"
+  - Minor = "27+"
+  - Minor = "29-alpha.1"
+  - Minor = "30-rc.0"
+
+Therefore, we have to try to abstract some semblance of sanity from this. This is a more forgiving strconv.Atoi() that handles
+that minor can have crazy things after it. We use it for major too as it saves us a split on ".".
+*/
+func convertToDecimal(s string) int {
 	n := 0
 	for _, r := range s {
 		if !unicode.IsDigit(r) {
