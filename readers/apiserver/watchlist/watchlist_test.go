@@ -21,8 +21,8 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/kubernetes"
 	fakediscovery "k8s.io/client-go/discovery/fake"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -1206,7 +1206,7 @@ func TestMinorInt(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		got := minorInt(test.in)
+		got := convertToDecimal(test.in)
 		if got != test.want {
 			t.Errorf("TestMinorInt(%s): got %d, want %d", test.name, got, test.want)
 		}
@@ -1276,28 +1276,28 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                         string
-		bookmarking                  bool
-		wantWatch                    bool
-		wantAllowWatchBookmarks      bool
-		wantResourceVersion          string
-		wantResourceVersionMatch     metav1.ResourceVersionMatch
+		name                     string
+		bookmarking              bool
+		wantWatch                bool
+		wantAllowWatchBookmarks  bool
+		wantResourceVersion      string
+		wantResourceVersionMatch metav1.ResourceVersionMatch
 	}{
 		{
-			name:                         "Success: bookmarking disabled sends only Watch true",
-			bookmarking:                  false,
-			wantWatch:                    true,
-			wantAllowWatchBookmarks:      false,
-			wantResourceVersion:          "",
-			wantResourceVersionMatch:     "",
+			name:                     "Success: bookmarking disabled sends only Watch true",
+			bookmarking:              false,
+			wantWatch:                true,
+			wantAllowWatchBookmarks:  false,
+			wantResourceVersion:      "",
+			wantResourceVersionMatch: "",
 		},
 		{
-			name:                         "Success: bookmarking enabled sends bookmark options",
-			bookmarking:                  true,
-			wantWatch:                    true,
-			wantAllowWatchBookmarks:      true,
-			wantResourceVersion:          "",
-			wantResourceVersionMatch:     metav1.ResourceVersionMatchNotOlderThan,
+			name:                     "Success: bookmarking enabled sends bookmark options",
+			bookmarking:              true,
+			wantWatch:                true,
+			wantAllowWatchBookmarks:  true,
+			wantResourceVersion:      "",
+			wantResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
 		},
 	}
 
