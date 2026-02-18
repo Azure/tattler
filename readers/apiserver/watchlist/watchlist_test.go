@@ -19,7 +19,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/apimachinery/pkg/watch"
+	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -1185,4 +1187,320 @@ func (m *fakeRelister) List(ctx context.Context, rt types.Retrieve) (chan promis
 		return m.listFunc(ctx, rt)
 	}
 	return nil, errors.New("not implemented")
+}
+
+func TestMinorInt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want int
+	}{
+		{name: "Success: plain number", in: "30", want: 30},
+		{name: "Success: number with plus suffix", in: "30+", want: 30},
+		{name: "Success: number with dot suffix", in: "30.1", want: 30},
+		{name: "Success: empty string", in: "", want: 0},
+		{name: "Success: non-numeric string", in: "abc", want: 0},
+		{name: "Success: zero", in: "0", want: 0},
+	}
+
+	for _, test := range tests {
+		got := convertToDecimal(test.in)
+		if got != test.want {
+			t.Errorf("TestMinorInt(%s): got %d, want %d", test.name, got, test.want)
+		}
+	}
+}
+
+func TestMajorMinor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		major string
+		minor string
+		want  [2]int
+	}{
+		{name: "Success: version 1.30", major: "1", minor: "30", want: [2]int{1, 30}},
+		{name: "Success: version with plus suffix", major: "1", minor: "30+", want: [2]int{1, 30}},
+	}
+
+	for _, test := range tests {
+		clientset := fake.NewSimpleClientset()
+		fakeDisc := clientset.Discovery().(*fakediscovery.FakeDiscovery)
+		fakeDisc.FakedServerVersion = &version.Info{Major: test.major, Minor: test.minor}
+
+		got, err := majorMinor(clientset)
+		if err != nil {
+			t.Errorf("TestMajorMinor(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		}
+		if got != test.want {
+			t.Errorf("TestMajorMinor(%s): got %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+func TestBookmarkingVersionThreshold(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		minor           string
+		wantBookmarking bool
+	}{
+		{name: "Success: bookmarking enabled for 1.30", minor: "30", wantBookmarking: true},
+		{name: "Success: bookmarking enabled for 1.31", minor: "31", wantBookmarking: true},
+		{name: "Success: bookmarking disabled for 1.29", minor: "29", wantBookmarking: false},
+		{name: "Success: bookmarking disabled for 1.14", minor: "14", wantBookmarking: false},
+	}
+
+	for _, test := range tests {
+		clientset := fake.NewSimpleClientset()
+		fakeDisc := clientset.Discovery().(*fakediscovery.FakeDiscovery)
+		fakeDisc.FakedServerVersion = &version.Info{Major: "1", Minor: test.minor}
+
+		r, err := New(context.Background(), clientset, types.RTPod)
+		if err != nil {
+			t.Errorf("TestBookmarkingVersionThreshold(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		}
+		if r.bookmarking != test.wantBookmarking {
+			t.Errorf("TestBookmarkingVersionThreshold(%s): got bookmarking == %v, want bookmarking == %v", test.name, r.bookmarking, test.wantBookmarking)
+		}
+	}
+}
+
+func TestConnectWatcherBookmarkOptions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                     string
+		bookmarking              bool
+		wantWatch                bool
+		wantAllowWatchBookmarks  bool
+		wantResourceVersion      string
+		wantResourceVersionMatch metav1.ResourceVersionMatch
+	}{
+		{
+			name:                     "Success: bookmarking disabled sends only Watch true",
+			bookmarking:              false,
+			wantWatch:                true,
+			wantAllowWatchBookmarks:  false,
+			wantResourceVersion:      "",
+			wantResourceVersionMatch: "",
+		},
+		{
+			name:                     "Success: bookmarking enabled sends bookmark options",
+			bookmarking:              true,
+			wantWatch:                true,
+			wantAllowWatchBookmarks:  true,
+			wantResourceVersion:      "",
+			wantResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
+		},
+	}
+
+	for _, test := range tests {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		var capturedOptions metav1.ListOptions
+		r := &Reader{
+			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			watcherSpawnDelay: 1 * time.Millisecond,
+			bookmarking:       test.bookmarking,
+		}
+
+		go r.connectWatcher(ctx, r.spawnCh)
+
+		promise := spawnReqMaker.New(ctx, func(options metav1.ListOptions) (watch.Interface, error) {
+			capturedOptions = options
+			return &fakeWatcher{}, nil
+		})
+
+		r.spawnCh <- promise
+		_, err := promise.Get(ctx)
+		if err != nil {
+			t.Errorf("TestConnectWatcherBookmarkOptions(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		}
+
+		if capturedOptions.Watch != test.wantWatch {
+			t.Errorf("TestConnectWatcherBookmarkOptions(%s): got Watch == %v, want Watch == %v", test.name, capturedOptions.Watch, test.wantWatch)
+		}
+		if capturedOptions.AllowWatchBookmarks != test.wantAllowWatchBookmarks {
+			t.Errorf("TestConnectWatcherBookmarkOptions(%s): got AllowWatchBookmarks == %v, want AllowWatchBookmarks == %v", test.name, capturedOptions.AllowWatchBookmarks, test.wantAllowWatchBookmarks)
+		}
+		if capturedOptions.ResourceVersion != test.wantResourceVersion {
+			t.Errorf("TestConnectWatcherBookmarkOptions(%s): got ResourceVersion == %q, want ResourceVersion == %q", test.name, capturedOptions.ResourceVersion, test.wantResourceVersion)
+		}
+		if capturedOptions.ResourceVersionMatch != test.wantResourceVersionMatch {
+			t.Errorf("TestConnectWatcherBookmarkOptions(%s): got ResourceVersionMatch == %q, want ResourceVersionMatch == %q", test.name, capturedOptions.ResourceVersionMatch, test.wantResourceVersionMatch)
+		}
+
+		cancel()
+	}
+}
+
+func TestHandleWatcherBookmarkReconnection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                    string
+		bookmarking             bool
+		bookmarkRV              string
+		spawnFails              bool
+		wantRVOnFirstReconnect  string
+		wantRVOnSecondReconnect string
+	}{
+		{
+			name:                    "Success: reconnection uses bookmarked resource version",
+			bookmarking:             true,
+			bookmarkRV:              "100",
+			spawnFails:              false,
+			wantRVOnFirstReconnect:  "100",
+			wantRVOnSecondReconnect: "",
+		},
+		{
+			name:                    "Success: reconnection failure resets resource version",
+			bookmarking:             true,
+			bookmarkRV:              "100",
+			spawnFails:              true,
+			wantRVOnFirstReconnect:  "100",
+			wantRVOnSecondReconnect: "",
+		},
+		{
+			name:                    "Success: no bookmarking does not set resource version",
+			bookmarking:             false,
+			bookmarkRV:              "100",
+			wantRVOnFirstReconnect:  "",
+			wantRVOnSecondReconnect: "",
+		},
+	}
+
+	for _, test := range tests {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		watchCallCount := 0
+		var capturedOptions []metav1.ListOptions
+		spawnCallCount := 0
+
+		r := &Reader{
+			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			watcherSpawnDelay: 1 * time.Millisecond,
+			bookmarking:       test.bookmarking,
+			fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
+				watchCallCount++
+				switch watchCallCount {
+				case 1:
+					return test.bookmarkRV, nil
+				case 2:
+					return "", nil
+				default:
+					<-ctx.Done()
+					return "", nil
+				}
+			},
+		}
+
+		go r.connectWatcher(ctx, r.spawnCh)
+
+		sp := func(options metav1.ListOptions) (watch.Interface, error) {
+			spawnCallCount++
+			capturedOptions = append(capturedOptions, options)
+			if test.spawnFails && spawnCallCount == 1 {
+				return nil, errors.New("410 Gone")
+			}
+			return &fakeWatcher{}, nil
+		}
+
+		done := make(chan error, 1)
+		go func() {
+			done <- r.handleWatcher(ctx, types.RTNamespace, &fakeWatcher{}, sp)
+		}()
+
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+
+		<-done
+
+		if len(capturedOptions) < 1 {
+			t.Errorf("TestHandleWatcherBookmarkReconnection(%s): expected at least 1 spawn call, got %d", test.name, len(capturedOptions))
+			continue
+		}
+
+		if capturedOptions[0].ResourceVersion != test.wantRVOnFirstReconnect {
+			t.Errorf("TestHandleWatcherBookmarkReconnection(%s): first reconnect got ResourceVersion == %q, want %q", test.name, capturedOptions[0].ResourceVersion, test.wantRVOnFirstReconnect)
+		}
+
+		if test.spawnFails && len(capturedOptions) >= 2 {
+			if capturedOptions[1].ResourceVersion != test.wantRVOnSecondReconnect {
+				t.Errorf("TestHandleWatcherBookmarkReconnection(%s): second reconnect got ResourceVersion == %q, want %q", test.name, capturedOptions[1].ResourceVersion, test.wantRVOnSecondReconnect)
+			}
+		}
+	}
+}
+
+func TestHandleWatcherGoneError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	watchCallCount := 0
+	spawnCallCount := 0
+	var capturedOptions []metav1.ListOptions
+
+	r := &Reader{
+		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+		watcherSpawnDelay: 1 * time.Millisecond,
+		bookmarking:       true,
+		fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
+			watchCallCount++
+			switch watchCallCount {
+			case 1:
+				return "500", nil
+			case 2:
+				return "", nil
+			default:
+				<-ctx.Done()
+				return "", nil
+			}
+		},
+	}
+
+	go r.connectWatcher(ctx, r.spawnCh)
+
+	sp := func(options metav1.ListOptions) (watch.Interface, error) {
+		spawnCallCount++
+		capturedOptions = append(capturedOptions, options)
+		if spawnCallCount == 1 {
+			return nil, errors.New("the resourceVersion is too old")
+		}
+		return &fakeWatcher{}, nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.handleWatcher(ctx, types.RTNamespace, &fakeWatcher{}, sp)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	<-done
+
+	if len(capturedOptions) < 2 {
+		t.Fatalf("TestHandleWatcherGoneError: expected at least 2 spawn calls, got %d", len(capturedOptions))
+	}
+
+	if capturedOptions[0].ResourceVersion != "500" {
+		t.Errorf("TestHandleWatcherGoneError: first reconnect got ResourceVersion == %q, want %q", capturedOptions[0].ResourceVersion, "500")
+	}
+
+	if capturedOptions[1].ResourceVersion != "" {
+		t.Errorf("TestHandleWatcherGoneError: second reconnect got ResourceVersion == %q, want %q", capturedOptions[1].ResourceVersion, "")
+	}
 }
