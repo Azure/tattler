@@ -388,7 +388,7 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[sp
 
 	for req := range ch {
 		watcher, err := req.In(so)
-		_ = req.Set(ctx, watcher, err) // Error only happens on context cancelation
+		req.Set(ctx, watcher, err) // Error only happens on context cancelation
 
 		// We have no way in which we can wait for a watcher to finish its initial pool of events because we
 		// have no idea what that is (like a List()). So, we try to put a pause on it to give time for initial processing
