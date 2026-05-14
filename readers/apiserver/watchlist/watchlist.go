@@ -24,6 +24,7 @@ import (
 	k8Types "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/utils/ptr"
 )
 
 var back = exponential.Must(exponential.New())
@@ -384,6 +385,7 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[sp
 		// The resourceVersion is added by handleWatcher() during restarts.
 		so.AllowWatchBookmarks = true
 		so.ResourceVersionMatch = metav1.ResourceVersionMatchNotOlderThan
+		so.SendInitialEvents = ptr.To(true)
 	}
 
 	for req := range ch {

@@ -24,6 +24,7 @@ import (
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/utils/ptr"
 )
 
 // To allow embedding in the fakeObject struct, because they
@@ -1282,6 +1283,7 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 		wantAllowWatchBookmarks  bool
 		wantResourceVersion      string
 		wantResourceVersionMatch metav1.ResourceVersionMatch
+		wantSendInitialEvents    *bool
 	}{
 		{
 			name:                     "Success: bookmarking disabled sends only Watch true",
@@ -1290,6 +1292,7 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 			wantAllowWatchBookmarks:  false,
 			wantResourceVersion:      "",
 			wantResourceVersionMatch: "",
+			wantSendInitialEvents:    nil,
 		},
 		{
 			name:                     "Success: bookmarking enabled sends bookmark options",
@@ -1298,6 +1301,7 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 			wantAllowWatchBookmarks:  true,
 			wantResourceVersion:      "",
 			wantResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
+			wantSendInitialEvents:    ptr.To(true),
 		},
 	}
 
@@ -1337,6 +1341,9 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 		}
 		if capturedOptions.ResourceVersionMatch != test.wantResourceVersionMatch {
 			t.Errorf("TestConnectWatcherBookmarkOptions(%s): got ResourceVersionMatch == %q, want ResourceVersionMatch == %q", test.name, capturedOptions.ResourceVersionMatch, test.wantResourceVersionMatch)
+		}
+		if !reflect.DeepEqual(capturedOptions.SendInitialEvents, test.wantSendInitialEvents) {
+			t.Errorf("TestConnectWatcherBookmarkOptions(%s): got SendInitialEvents == %v, want SendInitialEvents == %v", test.name, capturedOptions.SendInitialEvents, test.wantSendInitialEvents)
 		}
 
 		cancel()
