@@ -383,9 +383,10 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[sp
 	so := metav1.ListOptions{Watch: true}
 	if r.bookmarking {
 		// The resourceVersion is added by handleWatcher() during restarts.
+		// Explicitly disable initial events so reconnects do not replay all watched objects.
 		so.AllowWatchBookmarks = true
 		so.ResourceVersionMatch = metav1.ResourceVersionMatchNotOlderThan
-		so.SendInitialEvents = ptr.To(true)
+		so.SendInitialEvents = ptr.To(false)
 	}
 
 	for req := range ch {

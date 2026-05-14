@@ -1301,7 +1301,7 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 			wantAllowWatchBookmarks:  true,
 			wantResourceVersion:      "",
 			wantResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
-			wantSendInitialEvents:    ptr.To(true),
+			wantSendInitialEvents:    ptr.To(false),
 		},
 	}
 
