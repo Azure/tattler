@@ -19,8 +19,13 @@ import (
 	"github.com/gostdlib/base/values/generics/sets"
 
 	"go.opentelemetry.io/otel/metric"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8Types "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -32,6 +37,13 @@ var back = exponential.Must(exponential.New())
 // lister defines the interface for relisting resources
 type lister interface {
 	List(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error)
+}
+
+// BookmarkStore stores resourceVersions from watch bookmarks for startup resume.
+type BookmarkStore interface {
+	Load(ctx context.Context, gvr schema.GroupVersionResource) (string, error)
+	Store(ctx context.Context, gvr schema.GroupVersionResource, resourceVersion string) error
+	Delete(ctx context.Context, gvr schema.GroupVersionResource) error
 }
 
 // Reader reports changes made to data objects on the APIServer via the watchlist API.
@@ -49,6 +61,7 @@ type Reader struct {
 	spawnCh           chan promises.Promise[spawnWatcher, watch.Interface]
 	watcherSpawnDelay time.Duration
 	bookmarking       bool
+	bookmarkStore     BookmarkStore
 
 	dataCh        chan data.Entry
 	waitWatchers  sync.Group
@@ -85,6 +98,17 @@ func WithRelist(d time.Duration) Option {
 			return errors.New("relist duration must be less than 7 days")
 		}
 		c.relistInterval = d
+		return nil
+	}
+}
+
+// WithBookmarkStore sets a store used to load and persist watch bookmark resourceVersions.
+func WithBookmarkStore(store BookmarkStore) Option {
+	return func(c *Reader) error {
+		if store == nil {
+			return errors.New("bookmark store is nil")
+		}
+		c.bookmarkStore = store
 		return nil
 	}
 }
@@ -207,6 +231,84 @@ func (r *Reader) SetOut(ctx context.Context, out chan data.Entry) error {
 // spawnWatcher is a function that creates a watcher for a resource.
 type spawnWatcher func(options metav1.ListOptions) (watch.Interface, error)
 
+func withResourceVersion(sp spawnWatcher, resourceVersion string) spawnWatcher {
+	if resourceVersion == "" {
+		return sp
+	}
+	return func(options metav1.ListOptions) (watch.Interface, error) {
+		options.ResourceVersion = resourceVersion
+		return sp(options)
+	}
+}
+
+func bookmarkKey(rt types.Retrieve, index int) schema.GroupVersionResource {
+	bookmarkKeys := map[types.Retrieve][]schema.GroupVersionResource{
+		types.RTNamespace:        {corev1.SchemeGroupVersion.WithResource("namespaces")},
+		types.RTNode:             {corev1.SchemeGroupVersion.WithResource("nodes")},
+		types.RTPod:              {corev1.SchemeGroupVersion.WithResource("pods")},
+		types.RTPersistentVolume: {corev1.SchemeGroupVersion.WithResource("persistentvolumes")},
+		types.RTRBAC: {
+			rbacv1.SchemeGroupVersion.WithResource("roles"),
+			rbacv1.SchemeGroupVersion.WithResource("rolebindings"),
+			rbacv1.SchemeGroupVersion.WithResource("clusterroles"),
+			rbacv1.SchemeGroupVersion.WithResource("clusterrolebindings"),
+		},
+		types.RTService:           {corev1.SchemeGroupVersion.WithResource("services")},
+		types.RTDeployment:        {appsv1.SchemeGroupVersion.WithResource("deployments")},
+		types.RTIngressController: {networkingv1.SchemeGroupVersion.WithResource("ingresses")},
+		types.RTEndpoint:          {corev1.SchemeGroupVersion.WithResource("endpoints")},
+	}
+
+	keys := bookmarkKeys[rt]
+	if index < 0 || index >= len(keys) {
+		return schema.GroupVersionResource{}
+	}
+	return keys[index]
+}
+
+func bookmarkResourceName(gvr schema.GroupVersionResource) string {
+	if gvr.Empty() {
+		return ""
+	}
+	group := gvr.Group
+	if group == "" {
+		// Core Kubernetes resources use an empty API group in GroupVersionResource.
+		// .v1.pods vs core.v1.pods
+		group = "core"
+	}
+	return fmt.Sprintf("%s.%s.%s", group, gvr.Version, gvr.Resource)
+}
+
+func (r *Reader) loadBookmark(ctx context.Context, key schema.GroupVersionResource) string {
+	if !r.bookmarking || r.bookmarkStore == nil || key.Empty() {
+		return ""
+	}
+	rv, err := r.bookmarkStore.Load(ctx, key)
+	if err != nil {
+		context.Log(ctx).Error(fmt.Sprintf("error loading bookmark: %v", err))
+		return ""
+	}
+	return rv
+}
+
+func (r *Reader) storeBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) {
+	if !r.bookmarking || r.bookmarkStore == nil || key.Empty() || resourceVersion == "" {
+		return
+	}
+	if err := r.bookmarkStore.Store(ctx, key, resourceVersion); err != nil {
+		context.Log(ctx).Error(fmt.Sprintf("error storing bookmark(%s): %v", bookmarkResourceName(key), err))
+	}
+}
+
+func (r *Reader) clearBookmark(ctx context.Context, key schema.GroupVersionResource) {
+	if !r.bookmarking || r.bookmarkStore == nil || key.Empty() {
+		return
+	}
+	if err := r.bookmarkStore.Delete(ctx, key); err != nil {
+		context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkResourceName(key), err))
+	}
+}
+
 // spawnLister is a function that creates a lister for a resource.
 type spawnLister func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error)
 
@@ -315,7 +417,14 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spawnWatchers []s
 
 	watchers := make([]watch.Interface, len(spawnWatchers))
 	for i, sp := range spawnWatchers {
-		w, err := r.getWatcher(ctx, rt, sp)
+		key := bookmarkKey(rt, i)
+		resourceVersion := r.loadBookmark(ctx, key)
+		w, err := r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
+		if err != nil && resourceVersion != "" {
+			r.clearBookmark(ctx, key)
+			resourceVersion = ""
+			w, err = r.getWatcher(ctx, rt, sp)
+		}
 		if err != nil {
 			return err
 		}
@@ -325,7 +434,7 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spawnWatchers []s
 			ctx,
 			func(ctx context.Context) error {
 				defer w.Stop()
-				return r.handleWatcher(ctx, rt, w, sp)
+				return r.handleWatcher(ctx, rt, key, resourceVersion, w, sp)
 			},
 		)
 	}
@@ -336,12 +445,12 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spawnWatchers []s
 // handleWatcher handles a single watcher. It takes the watcher and hands it off to watchEvents. If watchEvents returns
 // an error and Context is not cancelled, our retrier will try and get a new watcher. This will block until the context
 // is canceled.
-func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, w watch.Interface, sp spawnWatcher) error {
-	var resourceVersion string
+func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schema.GroupVersionResource, resourceVersion string, w watch.Interface, sp spawnWatcher) error {
 	for {
-		rv, err := r.watchEvents(ctx, w)
+		rv, err := r.watchEvents(ctx, key, w)
 		if rv != "" {
 			resourceVersion = rv
+			r.storeBookmark(ctx, key, rv)
 		}
 		if err != nil {
 			context.Log(ctx).Error(fmt.Sprintf("error watching %v events: %v", rt, err))
@@ -355,14 +464,14 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, w watch.I
 			func(ctx context.Context, _ exponential.Record) error {
 				wrapped := sp
 				if r.bookmarking && resourceVersion != "" {
-					wrapped = func(options metav1.ListOptions) (watch.Interface, error) {
-						options.ResourceVersion = resourceVersion
-						return sp(options)
-					}
+					wrapped = withResourceVersion(sp, resourceVersion)
 				}
 				var err error
 				w, err = r.getWatcher(ctx, rt, wrapped)
 				if err != nil {
+					if resourceVersion != "" {
+						r.clearBookmark(ctx, key)
+					}
 					resourceVersion = ""
 					context.Log(ctx).Error(fmt.Sprintf("error re-creating watcher(%v): %v", rt, err))
 				}
@@ -404,7 +513,7 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[sp
 // This is subbed in for .watchEvents in the Reader struct.
 // If the watcher can emit bookmarks, the string returned will be the resource version.
 // This blocks until the watcher is closed.
-func (r *Reader) watchEvents(ctx context.Context, watcher watch.Interface) (string, error) {
+func (r *Reader) watchEvents(ctx context.Context, key schema.GroupVersionResource, watcher watch.Interface) (string, error) {
 	if r.fakeWatchEvents != nil {
 		return r.fakeWatchEvents(ctx, watcher)
 	}
@@ -423,6 +532,7 @@ func (r *Reader) watchEvents(ctx context.Context, watcher watch.Interface) (stri
 		rv, err := r.watchEvent(ctx, ch, stopper)
 		if rv != "" {
 			resourceVersion = rv
+			r.storeBookmark(ctx, key, rv)
 		}
 		// Always an io.EOF, so we don't log it, we just exit.
 		if err != nil {

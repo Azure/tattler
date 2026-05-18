@@ -16,8 +16,10 @@ import (
 	"github.com/gostdlib/base/values/generics/promises"
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/apimachinery/pkg/watch"
@@ -45,6 +47,38 @@ func (f *fakeObject) GetResourceVersion() string {
 
 type fakeWatcher struct {
 	watch.Interface
+}
+
+type fakeBookmarkStore struct {
+	values   map[schema.GroupVersionResource]string
+	stores   map[schema.GroupVersionResource]string
+	deletes  []schema.GroupVersionResource
+	loadErr  error
+	storeErr error
+}
+
+func (f *fakeBookmarkStore) Load(ctx context.Context, key schema.GroupVersionResource) (string, error) {
+	if f.loadErr != nil {
+		return "", f.loadErr
+	}
+	return f.values[key], nil
+}
+
+func (f *fakeBookmarkStore) Store(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) error {
+	if f.storeErr != nil {
+		return f.storeErr
+	}
+	if f.stores == nil {
+		f.stores = map[schema.GroupVersionResource]string{}
+	}
+	f.stores[key] = resourceVersion
+	return nil
+}
+
+func (f *fakeBookmarkStore) Delete(ctx context.Context, key schema.GroupVersionResource) error {
+	f.deletes = append(f.deletes, key)
+	delete(f.values, key)
+	return nil
 }
 
 func init() {
@@ -84,6 +118,13 @@ func TestNew(t *testing.T) {
 			wantErr:       false,
 		},
 		{
+			name:          "Success: with bookmark ConfigMap option",
+			clientset:     clientset,
+			retrieveTypes: types.RTPod,
+			opts:          []Option{WithBookmarkConfigMap("default", "tattler-bookmarks")},
+			wantErr:       false,
+		},
+		{
 			name:          "Error: nil clientset",
 			clientset:     nil,
 			retrieveTypes: types.RTPod,
@@ -106,6 +147,20 @@ func TestNew(t *testing.T) {
 			clientset:     clientset,
 			retrieveTypes: types.RTPod,
 			opts:          []Option{WithRelist(30 * time.Minute)},
+			wantErr:       true,
+		},
+		{
+			name:          "Error: bookmark ConfigMap namespace empty",
+			clientset:     clientset,
+			retrieveTypes: types.RTPod,
+			opts:          []Option{WithBookmarkConfigMap("", "tattler-bookmarks")},
+			wantErr:       true,
+		},
+		{
+			name:          "Error: bookmark ConfigMap name empty",
+			clientset:     clientset,
+			retrieveTypes: types.RTPod,
+			opts:          []Option{WithBookmarkConfigMap("default", "")},
 			wantErr:       true,
 		},
 		{
@@ -575,6 +630,238 @@ func TestWatch(t *testing.T) {
 	}
 }
 
+func TestBookmarkKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		rt    types.Retrieve
+		index int
+		want  string
+	}{
+		{name: "namespace", rt: types.RTNamespace, want: "core.v1.namespaces"},
+		{name: "node", rt: types.RTNode, want: "core.v1.nodes"},
+		{name: "pod", rt: types.RTPod, want: "core.v1.pods"},
+		{name: "persistent volume", rt: types.RTPersistentVolume, want: "core.v1.persistentvolumes"},
+		{name: "rbac roles", rt: types.RTRBAC, index: 0, want: "rbac.authorization.k8s.io.v1.roles"},
+		{name: "rbac rolebindings", rt: types.RTRBAC, index: 1, want: "rbac.authorization.k8s.io.v1.rolebindings"},
+		{name: "rbac clusterroles", rt: types.RTRBAC, index: 2, want: "rbac.authorization.k8s.io.v1.clusterroles"},
+		{name: "rbac clusterrolebindings", rt: types.RTRBAC, index: 3, want: "rbac.authorization.k8s.io.v1.clusterrolebindings"},
+		{name: "service", rt: types.RTService, want: "core.v1.services"},
+		{name: "deployment", rt: types.RTDeployment, want: "apps.v1.deployments"},
+		{name: "ingress", rt: types.RTIngressController, want: "networking.k8s.io.v1.ingresses"},
+		{name: "endpoint", rt: types.RTEndpoint, want: "core.v1.endpoints"},
+		{name: "unknown", rt: types.Retrieve(1 << 20), want: ""},
+		{name: "out of range", rt: types.RTRBAC, index: 4, want: ""},
+	}
+
+	for _, test := range tests {
+		got := bookmarkResourceName(bookmarkKey(test.rt, test.index))
+		if got != test.want {
+			t.Errorf("TestBookmarkKey(%s): got %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestConfigMapBookmarkStore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	const namespace = "default"
+	const name = "tattler-bookmarks"
+	key := corev1.SchemeGroupVersion.WithResource("pods")
+	dataKey := bookmarkConfigMapDataKey(key)
+
+	t.Run("Load requires provisioned ConfigMap", func(t *testing.T) {
+		t.Parallel()
+
+		store := newConfigMapBookmarkStore(fake.NewSimpleClientset(), namespace, name)
+		_, err := store.Load(ctx, key)
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("Load() got err %v, want not found", err)
+		}
+	})
+
+	t.Run("Store requires provisioned ConfigMap", func(t *testing.T) {
+		t.Parallel()
+
+		clientset := fake.NewSimpleClientset()
+		store := newConfigMapBookmarkStore(clientset, namespace, name)
+		err := store.Store(ctx, key, "100")
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("Store() got err %v, want not found", err)
+		}
+		_, err = clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("Get() got err %v, want not found", err)
+		}
+	})
+
+	t.Run("Store updates provisioned ConfigMap", func(t *testing.T) {
+		t.Parallel()
+
+		clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Data:       map[string]string{},
+		})
+		store := newConfigMapBookmarkStore(clientset, namespace, name)
+		if err := store.Store(ctx, key, "100"); err != nil {
+			t.Fatalf("Store() got err %v, want nil", err)
+		}
+
+		cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Get() got err %v, want nil", err)
+		}
+		if got := cm.Data[dataKey]; got != "100" {
+			t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
+		}
+	})
+}
+
+func TestWatchBookmarkStoreStartup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		storedRV        string
+		loadErr         error
+		failStoredWatch bool
+		wantRVs         []string
+		wantDelete      bool
+	}{
+		{
+			name:     "Success: uses stored bookmark on startup",
+			storedRV: "500",
+			wantRVs:  []string{"500"},
+		},
+		{
+			name:            "Success: clears stored bookmark after startup failure",
+			storedRV:        "500",
+			failStoredWatch: true,
+			wantRVs:         []string{"500", ""},
+			wantDelete:      true,
+		},
+		{
+			name:    "Success: ignores bookmark load error",
+			loadErr: errors.New("bookmark ConfigMap not found"),
+			wantRVs: []string{""},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			key := bookmarkKey(types.RTNamespace, 0)
+			store := &fakeBookmarkStore{values: map[schema.GroupVersionResource]string{key: test.storedRV}, loadErr: test.loadErr}
+			capturedOptions := []metav1.ListOptions{}
+
+			r := &Reader{
+				spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+				watcherSpawnDelay: 1 * time.Millisecond,
+				bookmarking:       true,
+				bookmarkStore:     store,
+				fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
+					<-ctx.Done()
+					return "", nil
+				},
+			}
+
+			go r.connectWatcher(ctx, r.spawnCh)
+
+			sp := func(options metav1.ListOptions) (watch.Interface, error) {
+				capturedOptions = append(capturedOptions, options)
+				if test.failStoredWatch && options.ResourceVersion == test.storedRV {
+					return nil, errors.New("the resourceVersion is too old")
+				}
+				return watcherWithOnlyStop{}, nil
+			}
+
+			if err := r.watch(ctx, types.RTNamespace, []spawnWatcher{sp}); err != nil {
+				t.Fatalf("watch returned error: %v", err)
+			}
+			cancel()
+
+			if len(capturedOptions) != len(test.wantRVs) {
+				t.Fatalf("got %d spawn calls, want %d", len(capturedOptions), len(test.wantRVs))
+			}
+			for i, wantRV := range test.wantRVs {
+				if capturedOptions[i].ResourceVersion != wantRV {
+					t.Errorf("spawn %d got ResourceVersion == %q, want %q", i, capturedOptions[i].ResourceVersion, wantRV)
+				}
+			}
+			if gotDelete := len(store.deletes) > 0; gotDelete != test.wantDelete {
+				t.Errorf("got bookmark delete == %v, want %v", gotDelete, test.wantDelete)
+			}
+		})
+	}
+}
+
+func TestHandleWatcherStoresBookmarks(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	key := bookmarkKey(types.RTNamespace, 0)
+	store := &fakeBookmarkStore{values: map[schema.GroupVersionResource]string{}}
+	r := &Reader{
+		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+		watcherSpawnDelay: 1 * time.Millisecond,
+		bookmarking:       true,
+		bookmarkStore:     store,
+		fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
+			cancel()
+			return "700", nil
+		},
+	}
+
+	go r.connectWatcher(ctx, r.spawnCh)
+
+	sp := func(options metav1.ListOptions) (watch.Interface, error) {
+		return watcherWithOnlyStop{}, nil
+	}
+
+	if err := r.handleWatcher(ctx, types.RTNamespace, key, "", watcherWithOnlyStop{}, sp); err != nil {
+		t.Fatalf("handleWatcher returned error: %v", err)
+	}
+	if got := store.stores[key]; got != "700" {
+		t.Fatalf("stored bookmark got %q, want %q", got, "700")
+	}
+}
+
+func TestHandleWatcherIgnoresBookmarkStoreError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	key := bookmarkKey(types.RTNamespace, 0)
+	store := &fakeBookmarkStore{values: map[schema.GroupVersionResource]string{}, storeErr: errors.New("bookmark ConfigMap update failed")}
+	r := &Reader{
+		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+		watcherSpawnDelay: 1 * time.Millisecond,
+		bookmarking:       true,
+		bookmarkStore:     store,
+		fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
+			cancel()
+			return "700", nil
+		},
+	}
+
+	go r.connectWatcher(ctx, r.spawnCh)
+
+	sp := func(options metav1.ListOptions) (watch.Interface, error) {
+		return watcherWithOnlyStop{}, nil
+	}
+
+	if err := r.handleWatcher(ctx, types.RTNamespace, key, "", watcherWithOnlyStop{}, sp); err != nil {
+		t.Fatalf("handleWatcher returned error: %v", err)
+	}
+}
+
 func TestWatchEvent(t *testing.T) {
 	t.Parallel()
 
@@ -994,7 +1281,7 @@ func TestHandleWatcher(t *testing.T) {
 		// Create initial watcher
 		w := &fakeWatcher{}
 
-		err := r.handleWatcher(ctx, types.RTNamespace, w, sp)
+		err := r.handleWatcher(ctx, types.RTNamespace, bookmarkKey(types.RTNamespace, 0), "", w, sp)
 
 		if test.expectExit && err != nil {
 			t.Errorf("TestHandleWatcher(%s): unexpected error: %v", test.name, err)
@@ -1425,7 +1712,7 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- r.handleWatcher(ctx, types.RTNamespace, &fakeWatcher{}, sp)
+			done <- r.handleWatcher(ctx, types.RTNamespace, bookmarkKey(types.RTNamespace, 0), "", &fakeWatcher{}, sp)
 		}()
 
 		time.Sleep(200 * time.Millisecond)
@@ -1491,7 +1778,7 @@ func TestHandleWatcherGoneError(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- r.handleWatcher(ctx, types.RTNamespace, &fakeWatcher{}, sp)
+		done <- r.handleWatcher(ctx, types.RTNamespace, bookmarkKey(types.RTNamespace, 0), "", &fakeWatcher{}, sp)
 	}()
 
 	time.Sleep(200 * time.Millisecond)
