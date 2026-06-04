@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
+	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/relist"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
@@ -16,7 +17,6 @@ import (
 	"github.com/gostdlib/base/values/generics/promises"
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -118,10 +118,10 @@ func TestNew(t *testing.T) {
 			wantErr:       false,
 		},
 		{
-			name:          "Success: with bookmark ConfigMap option",
+			name:          "Success: with bookmark store option",
 			clientset:     clientset,
 			retrieveTypes: types.RTPod,
-			opts:          []Option{WithBookmarkConfigMap("default", "tattler-bookmarks")},
+			opts:          []Option{WithBookmarkStore(bookmarks.NewConfigMapStore(clientset, "default", "tattler-bookmarks"))},
 			wantErr:       false,
 		},
 		{
@@ -147,20 +147,6 @@ func TestNew(t *testing.T) {
 			clientset:     clientset,
 			retrieveTypes: types.RTPod,
 			opts:          []Option{WithRelist(30 * time.Minute)},
-			wantErr:       true,
-		},
-		{
-			name:          "Error: bookmark ConfigMap namespace empty",
-			clientset:     clientset,
-			retrieveTypes: types.RTPod,
-			opts:          []Option{WithBookmarkConfigMap("", "tattler-bookmarks")},
-			wantErr:       true,
-		},
-		{
-			name:          "Error: bookmark ConfigMap name empty",
-			clientset:     clientset,
-			retrieveTypes: types.RTPod,
-			opts:          []Option{WithBookmarkConfigMap("default", "")},
 			wantErr:       true,
 		},
 		{
@@ -656,67 +642,11 @@ func TestBookmarkKey(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		got := bookmarkResourceName(bookmarkKey(test.rt, test.index))
+		got := bookmarkName(bookmarkKey(test.rt, test.index))
 		if got != test.want {
 			t.Errorf("TestBookmarkKey(%s): got %q, want %q", test.name, got, test.want)
 		}
 	}
-}
-
-func TestConfigMapBookmarkStore(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	const namespace = "default"
-	const name = "tattler-bookmarks"
-	key := corev1.SchemeGroupVersion.WithResource("pods")
-	dataKey := bookmarkConfigMapDataKey(key)
-
-	t.Run("Load requires provisioned ConfigMap", func(t *testing.T) {
-		t.Parallel()
-
-		store := newConfigMapBookmarkStore(fake.NewSimpleClientset(), namespace, name)
-		_, err := store.Load(ctx, key)
-		if !apierrors.IsNotFound(err) {
-			t.Fatalf("Load() got err %v, want not found", err)
-		}
-	})
-
-	t.Run("Store requires provisioned ConfigMap", func(t *testing.T) {
-		t.Parallel()
-
-		clientset := fake.NewSimpleClientset()
-		store := newConfigMapBookmarkStore(clientset, namespace, name)
-		err := store.Store(ctx, key, "100")
-		if !apierrors.IsNotFound(err) {
-			t.Fatalf("Store() got err %v, want not found", err)
-		}
-		_, err = clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
-		if !apierrors.IsNotFound(err) {
-			t.Fatalf("Get() got err %v, want not found", err)
-		}
-	})
-
-	t.Run("Store updates provisioned ConfigMap", func(t *testing.T) {
-		t.Parallel()
-
-		clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Data:       map[string]string{},
-		})
-		store := newConfigMapBookmarkStore(clientset, namespace, name)
-		if err := store.Store(ctx, key, "100"); err != nil {
-			t.Fatalf("Store() got err %v, want nil", err)
-		}
-
-		cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("Get() got err %v, want nil", err)
-		}
-		if got := cm.Data[dataKey]; got != "100" {
-			t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
-		}
-	})
 }
 
 func TestWatchBookmarkStoreStartup(t *testing.T) {

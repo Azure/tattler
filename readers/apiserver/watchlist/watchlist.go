@@ -266,7 +266,7 @@ func bookmarkKey(rt types.Retrieve, index int) schema.GroupVersionResource {
 	return keys[index]
 }
 
-func bookmarkResourceName(gvr schema.GroupVersionResource) string {
+func bookmarkName(gvr schema.GroupVersionResource) string {
 	if gvr.Empty() {
 		return ""
 	}
@@ -296,7 +296,7 @@ func (r *Reader) storeBookmark(ctx context.Context, key schema.GroupVersionResou
 		return
 	}
 	if err := r.bookmarkStore.Store(ctx, key, resourceVersion); err != nil {
-		context.Log(ctx).Error(fmt.Sprintf("error storing bookmark(%s): %v", bookmarkResourceName(key), err))
+		context.Log(ctx).Error(fmt.Sprintf("error storing bookmark(%s): %v", bookmarkName(key), err))
 	}
 }
 
@@ -305,7 +305,7 @@ func (r *Reader) clearBookmark(ctx context.Context, key schema.GroupVersionResou
 		return
 	}
 	if err := r.bookmarkStore.Delete(ctx, key); err != nil {
-		context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkResourceName(key), err))
+		context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
 	}
 }
 
