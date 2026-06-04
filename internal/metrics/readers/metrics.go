@@ -60,7 +60,6 @@ func DataEntry(ctx context.Context, e data.Entry) {
 	opt := api.WithAttributes(
 		attribute.Key(keepLabel).String("true"),
 		attribute.Key(sourceTypeLabel).String(e.SourceType().String()),
-		attribute.Key(sourceTypeLabel).String(e.SourceType().String()),
 		attribute.Key(changeTypeLabel).String(e.ChangeType().String()),
 		attribute.Key(objectTypeLabel).String(e.ObjectType().String()),
 	)
