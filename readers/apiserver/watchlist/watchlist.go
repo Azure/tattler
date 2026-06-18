@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -489,6 +490,7 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 // connectWatcher takes a request to create a watcher and creates it, sending the result back on the promise.
 // This prevents thundering herds of watchers trying to connect at the same time.
 func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[spawnWatcher, watch.Interface]) {
+	watchListEnabled := r.bookmarking
 	so := metav1.ListOptions{Watch: true}
 	if r.bookmarking {
 		// The resourceVersion is added by handleWatcher() during restarts.
@@ -500,6 +502,12 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[sp
 
 	for req := range ch {
 		watcher, err := req.In(so)
+		if watchListFeatureDisabled(err) && r.bookmarking && watchListEnabled {
+			watchListEnabled = false
+			so.ResourceVersionMatch = ""
+			so.SendInitialEvents = nil
+			watcher, err = req.In(so)
+		}
 		req.Set(ctx, watcher, err) // Error only happens on context cancelation
 
 		// We have no way in which we can wait for a watcher to finish its initial pool of events because we
@@ -507,6 +515,22 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[sp
 		// before we try to create another watcher.
 		time.Sleep(r.watcherSpawnDelay)
 	}
+}
+
+func watchListFeatureDisabled(err error) bool {
+	if !apierrors.IsInvalid(err) {
+		return false
+	}
+	statusErr, ok := err.(apierrors.APIStatus)
+	if !ok || statusErr.Status().Details == nil {
+		return false
+	}
+	for _, cause := range statusErr.Status().Details.Causes {
+		if cause.Field == "sendInitialEvents" && strings.Contains(cause.Message, "WatchList feature gate") {
+			return true
+		}
+	}
+	return false
 }
 
 // watchEvents watches the events from a watcher and sends them to the cache.

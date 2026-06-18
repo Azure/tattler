@@ -17,10 +17,12 @@ import (
 	"github.com/gostdlib/base/values/generics/promises"
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/apimachinery/pkg/watch"
 	fakediscovery "k8s.io/client-go/discovery/fake"
@@ -726,6 +728,56 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 				t.Errorf("got bookmark delete == %v, want %v", gotDelete, test.wantDelete)
 			}
 		})
+	}
+}
+
+func TestWatchBookmarkInvalidWatchListOptionsFallback(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	capturedOptions := []metav1.ListOptions{}
+	r := &Reader{
+		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+		watcherSpawnDelay: 1 * time.Millisecond,
+		bookmarking:       true,
+		fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
+			<-ctx.Done()
+			return "", nil
+		},
+	}
+
+	go r.connectWatcher(ctx, r.spawnCh)
+
+	sp := func(options metav1.ListOptions) (watch.Interface, error) {
+		capturedOptions = append(capturedOptions, options)
+		if options.SendInitialEvents != nil {
+			return nil, apierrors.NewInvalid(
+				schema.GroupKind{Group: "meta.k8s.io", Kind: "ListOptions"},
+				"",
+				field.ErrorList{field.Forbidden(field.NewPath("sendInitialEvents"), "sendInitialEvents is forbidden for watch unless the WatchList feature gate is enabled")},
+			)
+		}
+		return watcherWithOnlyStop{}, nil
+	}
+
+	if err := r.watch(ctx, types.RTNamespace, []spawnWatcher{sp}); err != nil {
+		t.Fatalf("watch returned error: %v", err)
+	}
+	cancel()
+
+	if len(capturedOptions) != 2 {
+		t.Fatalf("got %d spawn calls, want 2", len(capturedOptions))
+	}
+	if capturedOptions[0].SendInitialEvents == nil || capturedOptions[0].ResourceVersionMatch != metav1.ResourceVersionMatchNotOlderThan {
+		t.Fatalf("first spawn options got %#v, want WatchList options", capturedOptions[0])
+	}
+	if capturedOptions[1].SendInitialEvents != nil || capturedOptions[1].ResourceVersionMatch != "" {
+		t.Fatalf("fallback spawn options got %#v, want no WatchList options", capturedOptions[1])
+	}
+	if !capturedOptions[1].Watch || !capturedOptions[1].AllowWatchBookmarks {
+		t.Fatalf("fallback spawn options got %#v, want watch with bookmarks", capturedOptions[1])
 	}
 }
 
