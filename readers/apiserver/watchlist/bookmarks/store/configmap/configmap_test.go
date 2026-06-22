@@ -1,4 +1,4 @@
-package bookmarks
+package configmap
 
 import (
 	"testing"
@@ -12,7 +12,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func TestNewConfigMapStorePanics(t *testing.T) {
+func TestNewPanics(t *testing.T) {
 	t.Parallel()
 
 	clientset := fake.NewSimpleClientset()
@@ -35,19 +35,19 @@ func TestNewConfigMapStorePanics(t *testing.T) {
 			defer func() {
 				r := recover()
 				if test.wantPanic && r == nil {
-					t.Errorf("TestNewConfigMapStorePanics(%s): got no panic, want panic", test.name)
+					t.Errorf("TestNewPanics(%s): got no panic, want panic", test.name)
 				}
 				if !test.wantPanic && r != nil {
-					t.Errorf("TestNewConfigMapStorePanics(%s): got panic %v, want no panic", test.name, r)
+					t.Errorf("TestNewPanics(%s): got panic %v, want no panic", test.name, r)
 				}
 			}()
 
-			NewConfigMapStore(test.clientset, test.namespace, test.cmName)
+			New(test.clientset, test.namespace, test.cmName)
 		}()
 	}
 }
 
-func TestConfigMapStore(t *testing.T) {
+func TestStore(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -59,7 +59,7 @@ func TestConfigMapStore(t *testing.T) {
 	t.Run("Load requires provisioned ConfigMap", func(t *testing.T) {
 		t.Parallel()
 
-		store := NewConfigMapStore(fake.NewSimpleClientset(), namespace, name)
+		store := New(fake.NewSimpleClientset(), namespace, name)
 		_, err := store.Load(ctx, key)
 		if !apierrors.IsNotFound(err) {
 			t.Fatalf("Load() got err %v, want not found", err)
@@ -70,7 +70,7 @@ func TestConfigMapStore(t *testing.T) {
 		t.Parallel()
 
 		clientset := fake.NewSimpleClientset()
-		store := NewConfigMapStore(clientset, namespace, name)
+		store := New(clientset, namespace, name)
 		err := store.Store(ctx, key, "100")
 		if !apierrors.IsNotFound(err) {
 			t.Fatalf("Store() got err %v, want not found", err)
@@ -88,16 +88,16 @@ func TestConfigMapStore(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Data:       map[string]string{},
 		})
-		store := NewConfigMapStore(clientset, namespace, name)
+		store := New(clientset, namespace, name)
 		if err := store.Store(ctx, key, "100"); err != nil {
 			t.Fatalf("Store() got err %v, want nil", err)
 		}
 
-		cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+		configMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			t.Fatalf("Get() got err %v, want nil", err)
 		}
-		if got := cm.Data[dataKey]; got != "100" {
+		if got := configMap.Data[dataKey]; got != "100" {
 			t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
 		}
 	})
@@ -109,16 +109,16 @@ func TestConfigMapStore(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Data:       map[string]string{dataKey: "100"},
 		})
-		store := NewConfigMapStore(clientset, namespace, name)
+		store := New(clientset, namespace, name)
 		if err := store.Delete(ctx, key); err != nil {
 			t.Fatalf("Delete() got err %v, want nil", err)
 		}
 
-		cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+		configMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			t.Fatalf("Get() got err %v, want nil", err)
 		}
-		if _, ok := cm.Data[dataKey]; ok {
+		if _, ok := configMap.Data[dataKey]; ok {
 			t.Fatalf("ConfigMap data[%q] still present, want removed", dataKey)
 		}
 	})

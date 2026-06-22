@@ -10,6 +10,7 @@ import (
 
 	"github.com/Azure/tattler/data"
 	metrics "github.com/Azure/tattler/internal/metrics/readers"
+	bookmarkstore "github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/relist"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/concurrency/sync"
@@ -40,13 +41,6 @@ type lister interface {
 	List(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error)
 }
 
-// BookmarkStore stores resourceVersions from watch bookmarks for startup resume.
-type BookmarkStore interface {
-	Load(ctx context.Context, gvr schema.GroupVersionResource) (string, error)
-	Store(ctx context.Context, gvr schema.GroupVersionResource, resourceVersion string) error
-	Delete(ctx context.Context, gvr schema.GroupVersionResource) error
-}
-
 // Reader reports changes made to data objects on the APIServer via the watchlist API.
 type Reader struct {
 	cancel context.CancelFunc
@@ -62,7 +56,7 @@ type Reader struct {
 	spawnCh           chan promises.Promise[spawnWatcher, watch.Interface]
 	watcherSpawnDelay time.Duration
 	bookmarking       bool
-	bookmarkStore     BookmarkStore
+	bookmarkStore     bookmarkstore.Bookmarks
 
 	dataCh        chan data.Entry
 	waitWatchers  sync.Group
@@ -104,7 +98,7 @@ func WithRelist(d time.Duration) Option {
 }
 
 // WithBookmarkStore sets a store used to load and persist watch bookmark resourceVersions.
-func WithBookmarkStore(store BookmarkStore) Option {
+func WithBookmarkStore(store bookmarkstore.Bookmarks) Option {
 	return func(c *Reader) error {
 		if store == nil {
 			return errors.New("bookmark store is nil")

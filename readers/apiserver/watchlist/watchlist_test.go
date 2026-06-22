@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
-	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks"
+	storeconfigmap "github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/configmap"
+	storefake "github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/fake"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/relist"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
@@ -49,38 +50,6 @@ func (f *fakeObject) GetResourceVersion() string {
 
 type fakeWatcher struct {
 	watch.Interface
-}
-
-type fakeBookmarkStore struct {
-	values   map[schema.GroupVersionResource]string
-	stores   map[schema.GroupVersionResource]string
-	deletes  []schema.GroupVersionResource
-	loadErr  error
-	storeErr error
-}
-
-func (f *fakeBookmarkStore) Load(ctx context.Context, key schema.GroupVersionResource) (string, error) {
-	if f.loadErr != nil {
-		return "", f.loadErr
-	}
-	return f.values[key], nil
-}
-
-func (f *fakeBookmarkStore) Store(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) error {
-	if f.storeErr != nil {
-		return f.storeErr
-	}
-	if f.stores == nil {
-		f.stores = map[schema.GroupVersionResource]string{}
-	}
-	f.stores[key] = resourceVersion
-	return nil
-}
-
-func (f *fakeBookmarkStore) Delete(ctx context.Context, key schema.GroupVersionResource) error {
-	f.deletes = append(f.deletes, key)
-	delete(f.values, key)
-	return nil
 }
 
 func init() {
@@ -123,7 +92,7 @@ func TestNew(t *testing.T) {
 			name:          "Success: with bookmark store option",
 			clientset:     clientset,
 			retrieveTypes: types.RTPod,
-			opts:          []Option{WithBookmarkStore(bookmarks.NewConfigMapStore(clientset, "default", "tattler-bookmarks"))},
+			opts:          []Option{WithBookmarkStore(storeconfigmap.New(clientset, "default", "tattler-bookmarks"))},
 			wantErr:       false,
 		},
 		{
@@ -687,7 +656,8 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 			defer cancel()
 
 			key := bookmarkKey(types.RTNamespace, 0)
-			store := &fakeBookmarkStore{values: map[schema.GroupVersionResource]string{key: test.storedRV}, loadErr: test.loadErr}
+			store := storefake.New(map[schema.GroupVersionResource]string{key: test.storedRV})
+			store.SetLoadError(test.loadErr)
 			capturedOptions := []metav1.ListOptions{}
 
 			r := &Reader{
@@ -724,7 +694,7 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 					t.Errorf("spawn %d got ResourceVersion == %q, want %q", i, capturedOptions[i].ResourceVersion, wantRV)
 				}
 			}
-			if gotDelete := len(store.deletes) > 0; gotDelete != test.wantDelete {
+			if gotDelete := len(store.Deletes()) > 0; gotDelete != test.wantDelete {
 				t.Errorf("got bookmark delete == %v, want %v", gotDelete, test.wantDelete)
 			}
 		})
@@ -788,7 +758,7 @@ func TestHandleWatcherStoresBookmarks(t *testing.T) {
 	defer cancel()
 
 	key := bookmarkKey(types.RTNamespace, 0)
-	store := &fakeBookmarkStore{values: map[schema.GroupVersionResource]string{}}
+	store := storefake.New(map[schema.GroupVersionResource]string{})
 	r := &Reader{
 		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
 		watcherSpawnDelay: 1 * time.Millisecond,
@@ -809,7 +779,7 @@ func TestHandleWatcherStoresBookmarks(t *testing.T) {
 	if err := r.handleWatcher(ctx, types.RTNamespace, key, "", watcherWithOnlyStop{}, sp); err != nil {
 		t.Fatalf("handleWatcher returned error: %v", err)
 	}
-	if got := store.stores[key]; got != "700" {
+	if got := store.Stored(key); got != "700" {
 		t.Fatalf("stored bookmark got %q, want %q", got, "700")
 	}
 }
@@ -821,7 +791,8 @@ func TestHandleWatcherIgnoresBookmarkStoreError(t *testing.T) {
 	defer cancel()
 
 	key := bookmarkKey(types.RTNamespace, 0)
-	store := &fakeBookmarkStore{values: map[schema.GroupVersionResource]string{}, storeErr: errors.New("bookmark ConfigMap update failed")}
+	store := storefake.New(map[schema.GroupVersionResource]string{})
+	store.SetStoreError(errors.New("bookmark ConfigMap update failed"))
 	r := &Reader{
 		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
 		watcherSpawnDelay: 1 * time.Millisecond,
