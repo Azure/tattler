@@ -61,7 +61,7 @@ func (store *Store) Delete(ctx context.Context, key schema.GroupVersionResource)
 	return nil
 }
 
-func (*Store) PackagePrivate(private.Token) {}
+func (*Store) Package(private.Package) {}
 
 // SetLoadError configures the error returned by Load for tests covering degraded bookmark storage.
 func (store *Store) SetLoadError(err error) {

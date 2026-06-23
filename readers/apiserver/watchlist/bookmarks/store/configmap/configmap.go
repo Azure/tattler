@@ -2,6 +2,7 @@
 package configmap
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -28,19 +29,25 @@ type Store struct {
 }
 
 // New returns a Store that reads and writes bookmark resourceVersions to an existing ConfigMap.
-func New(clientset kubernetes.Interface, namespace, name string) *Store {
+func New(clientset kubernetes.Interface, namespace, name string) (*Store, error) {
 	namespace = strings.TrimSpace(namespace)
 	name = strings.TrimSpace(name)
 
-	if clientset == nil || namespace == "" || name == "" {
-		panic("configmap.New: clientset must be non-nil and namespace and name must be non-empty")
+	if clientset == nil {
+		return nil, errors.New("clientset is nil")
+	}
+	if namespace == "" {
+		return nil, errors.New("namespace is empty")
+	}
+	if name == "" {
+		return nil, errors.New("name is empty")
 	}
 
 	return &Store{
 		clientset: clientset,
 		namespace: namespace,
 		name:      name,
-	}
+	}, nil
 }
 
 // Load returns the stored resourceVersion for gvr, or an empty string if none is set.
@@ -129,7 +136,7 @@ func (cm *Store) Delete(ctx context.Context, gvr schema.GroupVersionResource) er
 	)
 }
 
-func (*Store) PackagePrivate(private.Token) {}
+func (*Store) Package(private.Package) {}
 
 func cmKey(gvr schema.GroupVersionResource) string {
 	if gvr.Empty() {

@@ -61,6 +61,10 @@ func TestNew(t *testing.T) {
 	t.Parallel()
 
 	clientset := fake.NewSimpleClientset()
+	bookmarkStore, err := storeconfigmap.New(clientset, "default", "tattler-bookmarks")
+	if err != nil {
+		t.Fatalf("configmap.New() got err %v, want nil", err)
+	}
 
 	tests := []struct {
 		name          string
@@ -92,7 +96,7 @@ func TestNew(t *testing.T) {
 			name:          "Success: with bookmark store option",
 			clientset:     clientset,
 			retrieveTypes: types.RTPod,
-			opts:          []Option{WithBookmarkStore(storeconfigmap.New(clientset, "default", "tattler-bookmarks"))},
+			opts:          []Option{WithBookmarkStore(bookmarkStore)},
 			wantErr:       false,
 		},
 		{

@@ -1,49 +1,130 @@
 package configmap
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/retry/exponential"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
-func TestNewPanics(t *testing.T) {
+func init() {
+	back = exponential.Must(exponential.New(exponential.WithTesting()))
+}
+
+const (
+	testNamespace = "default"
+	testName      = "tattler-bookmarks"
+)
+
+func TestNew(t *testing.T) {
 	t.Parallel()
 
 	clientset := fake.NewSimpleClientset()
-
 	tests := []struct {
 		name      string
 		clientset kubernetes.Interface
 		namespace string
 		cmName    string
-		wantPanic bool
+		wantErr   bool
 	}{
-		{name: "valid", clientset: clientset, namespace: "default", cmName: "tattler-bookmarks", wantPanic: false},
-		{name: "nil clientset", clientset: nil, namespace: "default", cmName: "tattler-bookmarks", wantPanic: true},
-		{name: "empty namespace", clientset: clientset, namespace: "  ", cmName: "tattler-bookmarks", wantPanic: true},
-		{name: "empty name", clientset: clientset, namespace: "default", cmName: "  ", wantPanic: true},
+		{name: "valid", clientset: clientset, namespace: testNamespace, cmName: testName},
+		{name: "nil clientset", clientset: nil, namespace: testNamespace, cmName: testName, wantErr: true},
+		{name: "empty namespace", clientset: clientset, namespace: "  ", cmName: testName, wantErr: true},
+		{name: "empty name", clientset: clientset, namespace: testNamespace, cmName: "  ", wantErr: true},
 	}
 
 	for _, test := range tests {
-		func() {
-			defer func() {
-				r := recover()
-				if test.wantPanic && r == nil {
-					t.Errorf("TestNewPanics(%s): got no panic, want panic", test.name)
-				}
-				if !test.wantPanic && r != nil {
-					t.Errorf("TestNewPanics(%s): got panic %v, want no panic", test.name, r)
-				}
-			}()
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-			New(test.clientset, test.namespace, test.cmName)
-		}()
+			store, err := New(test.clientset, test.namespace, test.cmName)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("New() got nil err, want error")
+				}
+				if store != nil {
+					t.Fatalf("New() got store %#v, want nil", store)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New() got err %v, want nil", err)
+			}
+			if store == nil {
+				t.Fatal("New() got nil store, want non-nil")
+			}
+		})
+	}
+}
+
+func TestLoad(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	key := corev1.SchemeGroupVersion.WithResource("pods")
+	dataKey := cmKey(key)
+
+	tests := []struct {
+		name    string
+		objects []runtime.Object
+		want    string
+		wantErr func(error) bool
+	}{
+		{
+			name:    "requires provisioned configmap",
+			wantErr: apierrors.IsNotFound,
+		},
+		{
+			name: "returns empty string for missing bookmark",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{},
+			}},
+		},
+		{
+			name: "returns stored bookmark",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{dataKey: "100"},
+			}},
+			want: "100",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			clientset := fake.NewSimpleClientset(test.objects...)
+			store, err := New(clientset, testNamespace, testName)
+			if err != nil {
+				t.Fatalf("New() got err %v, want nil", err)
+			}
+
+			got, err := store.Load(ctx, key)
+			if test.wantErr != nil {
+				if !test.wantErr(err) {
+					t.Fatalf("Load() got err %v, want matching error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() got err %v, want nil", err)
+			}
+			if got != test.want {
+				t.Fatalf("Load() got %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -51,75 +132,238 @@ func TestStore(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	const namespace = "default"
-	const name = "tattler-bookmarks"
 	key := corev1.SchemeGroupVersion.WithResource("pods")
 	dataKey := cmKey(key)
+	otherKey := cmKey(corev1.SchemeGroupVersion.WithResource("services"))
 
-	t.Run("Load requires provisioned ConfigMap", func(t *testing.T) {
-		t.Parallel()
+	tests := []struct {
+		name    string
+		objects []runtime.Object
+		gvr     schema.GroupVersionResource
+		rv      string
+		setup   func(*fake.Clientset)
+		check   func(*testing.T, *fake.Clientset)
+		wantErr func(error) bool
+	}{
+		{
+			name:    "requires provisioned configmap",
+			gvr:     key,
+			rv:      "100",
+			wantErr: apierrors.IsNotFound,
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				_, err := clientset.CoreV1().ConfigMaps(testNamespace).Get(ctx, testName, metav1.GetOptions{})
+				if !apierrors.IsNotFound(err) {
+					t.Fatalf("Get() got err %v, want not found", err)
+				}
+			},
+		},
+		{
+			name: "ignores empty gvr",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{},
+			}},
+			gvr: schema.GroupVersionResource{},
+			rv:  "100",
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				if len(configMap.Data) != 0 {
+					t.Fatalf("ConfigMap data got %#v, want empty", configMap.Data)
+				}
+			},
+		},
+		{
+			name: "ignores empty resourceVersion",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{},
+			}},
+			gvr: key,
+			rv:  "",
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				if len(configMap.Data) != 0 {
+					t.Fatalf("ConfigMap data got %#v, want empty", configMap.Data)
+				}
+			},
+		},
+		{
+			name: "initializes data",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+			}},
+			gvr: key,
+			rv:  "100",
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				if got := configMap.Data[dataKey]; got != "100" {
+					t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
+				}
+			},
+		},
+		{
+			name: "preserves other bookmarks",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{otherKey: "50"},
+			}},
+			gvr: key,
+			rv:  "100",
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				if got := configMap.Data[dataKey]; got != "100" {
+					t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
+				}
+				if got := configMap.Data[otherKey]; got != "50" {
+					t.Fatalf("ConfigMap data[%q] got %q, want %q", otherKey, got, "50")
+				}
+			},
+		},
+		{
+			name: "retries update conflicts",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{},
+			}},
+			gvr: key,
+			rv:  "100",
+			setup: func(clientset *fake.Clientset) {
+				attempts := 0
+				clientset.PrependReactor("update", "configmaps", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					attempts++
+					if attempts == 1 {
+						return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, testName, errors.New("stale resource version"))
+					}
+					return false, nil, nil
+				})
+			},
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				if got := configMap.Data[dataKey]; got != "100" {
+					t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
+				}
+			},
+		},
+	}
 
-		store := New(fake.NewSimpleClientset(), namespace, name)
-		_, err := store.Load(ctx, key)
-		if !apierrors.IsNotFound(err) {
-			t.Fatalf("Load() got err %v, want not found", err)
-		}
-	})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("Store requires provisioned ConfigMap", func(t *testing.T) {
-		t.Parallel()
+			clientset := fake.NewSimpleClientset(test.objects...)
+			if test.setup != nil {
+				test.setup(clientset)
+			}
+			store, err := New(clientset, testNamespace, testName)
+			if err != nil {
+				t.Fatalf("New() got err %v, want nil", err)
+			}
 
-		clientset := fake.NewSimpleClientset()
-		store := New(clientset, namespace, name)
-		err := store.Store(ctx, key, "100")
-		if !apierrors.IsNotFound(err) {
-			t.Fatalf("Store() got err %v, want not found", err)
-		}
-		_, err = clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
-		if !apierrors.IsNotFound(err) {
-			t.Fatalf("Get() got err %v, want not found", err)
-		}
-	})
-
-	t.Run("Store updates provisioned ConfigMap", func(t *testing.T) {
-		t.Parallel()
-
-		clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Data:       map[string]string{},
+			err = store.Store(ctx, test.gvr, test.rv)
+			if test.wantErr != nil {
+				if !test.wantErr(err) {
+					t.Fatalf("Store() got err %v, want matching error", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Store() got err %v, want nil", err)
+			}
+			if test.check != nil {
+				test.check(t, clientset)
+			}
 		})
-		store := New(clientset, namespace, name)
-		if err := store.Store(ctx, key, "100"); err != nil {
-			t.Fatalf("Store() got err %v, want nil", err)
-		}
+	}
+}
 
-		configMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("Get() got err %v, want nil", err)
-		}
-		if got := configMap.Data[dataKey]; got != "100" {
-			t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
-		}
-	})
+func TestDelete(t *testing.T) {
+	t.Parallel()
 
-	t.Run("Delete removes key from provisioned ConfigMap", func(t *testing.T) {
-		t.Parallel()
+	ctx := context.Background()
+	key := corev1.SchemeGroupVersion.WithResource("pods")
+	dataKey := cmKey(key)
+	otherKey := cmKey(corev1.SchemeGroupVersion.WithResource("services"))
 
-		clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Data:       map[string]string{dataKey: "100"},
+	tests := []struct {
+		name    string
+		objects []runtime.Object
+		gvr     schema.GroupVersionResource
+		check   func(*testing.T, *fake.Clientset)
+	}{
+		{
+			name: "ignores missing configmap",
+			gvr:  key,
+		},
+		{
+			name: "ignores empty gvr",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{dataKey: "100"},
+			}},
+			gvr: schema.GroupVersionResource{},
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				if got := configMap.Data[dataKey]; got != "100" {
+					t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
+				}
+			},
+		},
+		{
+			name: "ignores missing bookmark",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{otherKey: "50"},
+			}},
+			gvr: key,
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				if got := configMap.Data[otherKey]; got != "50" {
+					t.Fatalf("ConfigMap data[%q] got %q, want %q", otherKey, got, "50")
+				}
+			},
+		},
+		{
+			name: "removes bookmark",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{dataKey: "100", otherKey: "50"},
+			}},
+			gvr: key,
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				if _, ok := configMap.Data[dataKey]; ok {
+					t.Fatalf("ConfigMap data[%q] still present, want removed", dataKey)
+				}
+				if got := configMap.Data[otherKey]; got != "50" {
+					t.Fatalf("ConfigMap data[%q] got %q, want %q", otherKey, got, "50")
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			clientset := fake.NewSimpleClientset(test.objects...)
+			store, err := New(clientset, testNamespace, testName)
+			if err != nil {
+				t.Fatalf("New() got err %v, want nil", err)
+			}
+			if err := store.Delete(ctx, test.gvr); err != nil {
+				t.Fatalf("Delete() got err %v, want nil", err)
+			}
+			if test.check != nil {
+				test.check(t, clientset)
+			}
 		})
-		store := New(clientset, namespace, name)
-		if err := store.Delete(ctx, key); err != nil {
-			t.Fatalf("Delete() got err %v, want nil", err)
-		}
+	}
+}
 
-		configMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("Get() got err %v, want nil", err)
-		}
-		if _, ok := configMap.Data[dataKey]; ok {
-			t.Fatalf("ConfigMap data[%q] still present, want removed", dataKey)
-		}
-	})
+func getConfigMap(t *testing.T, ctx context.Context, clientset kubernetes.Interface, namespace, name string) *corev1.ConfigMap {
+	t.Helper()
+
+	configMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get() got err %v, want nil", err)
+	}
+	return configMap
 }
