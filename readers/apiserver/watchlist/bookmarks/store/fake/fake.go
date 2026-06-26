@@ -1,6 +1,7 @@
 package fake
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/internal/private"
@@ -41,6 +42,12 @@ func (store *Store) Store(ctx context.Context, key schema.GroupVersionResource, 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
+	if key.Empty() {
+		return errors.New("gvr is empty")
+	}
+	if resourceVersion == "" {
+		return errors.New("resourceVersion is empty")
+	}
 	if store.storeErr != nil {
 		return store.storeErr
 	}

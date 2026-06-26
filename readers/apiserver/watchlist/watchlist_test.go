@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Azure/tattler/data"
-	storeconfigmap "github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/configmap"
+	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/configmap"
 	storefake "github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/fake"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/relist"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
@@ -52,6 +52,8 @@ type fakeWatcher struct {
 	watch.Interface
 }
 
+var namespaceGVR = corev1.SchemeGroupVersion.WithResource("namespaces")
+
 func init() {
 	back = exponential.Must(exponential.New(exponential.WithTesting()))
 }
@@ -61,7 +63,7 @@ func TestNew(t *testing.T) {
 	t.Parallel()
 
 	clientset := fake.NewSimpleClientset()
-	bookmarkStore, err := storeconfigmap.New(clientset, "default", "tattler-bookmarks")
+	bookmarkStore, err := configmap.New(clientset, "default", "tattler-bookmarks")
 	if err != nil {
 		t.Fatalf("configmap.New() got err %v, want nil", err)
 	}
@@ -294,7 +296,7 @@ func TestRun(t *testing.T) {
 		ch            chan data.Entry
 		retrieves     types.Retrieve
 		cancelWatcher bool
-		fakeWatch     func(context.Context, types.Retrieve, []spawnWatcher) error
+		fakeWatch     func(context.Context, types.Retrieve, []resourceWatcher) error
 		wantRetrieves []types.Retrieve
 		wantErr       bool
 	}{
@@ -312,7 +314,7 @@ func TestRun(t *testing.T) {
 			name:      "Error: Namespace watch returns error",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNamespace,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return errors.New("error")
 			},
@@ -323,7 +325,7 @@ func TestRun(t *testing.T) {
 			name:      "Error: PersistentVolume watch returns error",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTPersistentVolume,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return errors.New("error")
 			},
@@ -334,7 +336,7 @@ func TestRun(t *testing.T) {
 			name:      "Error: Node watch returns error",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNode,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return errors.New("error")
 			},
@@ -345,7 +347,7 @@ func TestRun(t *testing.T) {
 			name:      "Namespace success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNamespace,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -355,7 +357,7 @@ func TestRun(t *testing.T) {
 			name:      "PersistentVolume success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTPersistentVolume,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -365,7 +367,7 @@ func TestRun(t *testing.T) {
 			name:      "Node success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNode,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -375,7 +377,7 @@ func TestRun(t *testing.T) {
 			name:      "Pod success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTPod,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -385,7 +387,7 @@ func TestRun(t *testing.T) {
 			name:      "RBAC success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTRBAC,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -395,7 +397,7 @@ func TestRun(t *testing.T) {
 			name:      "Services success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTService,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -405,7 +407,7 @@ func TestRun(t *testing.T) {
 			name:      "Deployments success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTDeployment,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -415,7 +417,7 @@ func TestRun(t *testing.T) {
 			name:      "Ingress Controller success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTIngressController,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -425,7 +427,7 @@ func TestRun(t *testing.T) {
 			name:      "Endpoint success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTEndpoint,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -436,7 +438,7 @@ func TestRun(t *testing.T) {
 			ch:   make(chan data.Entry, 1),
 			retrieves: (types.RTNamespace | types.RTPersistentVolume | types.RTNode | types.RTPod | types.RTRBAC | types.RTService | types.RTDeployment |
 				types.RTIngressController | types.RTEndpoint),
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -514,11 +516,11 @@ func TestWatch(t *testing.T) {
 	eventWatcherCount := 0
 
 	tests := []struct {
-		name          string
-		ctx           context.Context
-		spawnWatchers []spawnWatcher
-		eventWatcher  func(ctx context.Context, watcher watch.Interface) (string, error)
-		wantErr       bool
+		name         string
+		ctx          context.Context
+		spanWatchers []resourceWatcher
+		eventWatcher func(ctx context.Context, watcher watch.Interface) (string, error)
+		wantErr      bool
 	}{
 		{
 			name: "Context done",
@@ -527,20 +529,20 @@ func TestWatch(t *testing.T) {
 		{
 			name: "Watching had connection error and we haven't connected before",
 			ctx:  ctx,
-			spawnWatchers: []spawnWatcher{
-				func(options metav1.ListOptions) (watch.Interface, error) {
+			spanWatchers: []resourceWatcher{
+				{spawn: func(options metav1.ListOptions) (watch.Interface, error) {
 					return nil, errors.New("error")
-				},
+				}},
 			},
 			wantErr: true,
 		},
 		{
 			name: "Watching had connection error but we have connected before",
 			ctx:  ctx,
-			spawnWatchers: []spawnWatcher{
-				func(options metav1.ListOptions) (watch.Interface, error) {
+			spanWatchers: []resourceWatcher{
+				{spawn: func(options metav1.ListOptions) (watch.Interface, error) {
 					return watcherWithOnlyStop{}, nil
-				},
+				}},
 			},
 			eventWatcher: func(ctx context.Context, watcher watch.Interface) (string, error) {
 				if eventWatcherCount == 0 {
@@ -577,7 +579,7 @@ func TestWatch(t *testing.T) {
 			ctx = test.ctx
 		}
 
-		err := r.watch(ctx, types.RTNamespace, test.spawnWatchers)
+		err := r.watch(ctx, types.RTNamespace, test.spanWatchers)
 		switch {
 		case test.wantErr && err == nil:
 			t.Errorf("TestWatch(%s): got err == nil, want err != nil", test.name)
@@ -591,35 +593,38 @@ func TestWatch(t *testing.T) {
 	}
 }
 
-func TestBookmarkKey(t *testing.T) {
+func TestCreateWatcherBookmarkKeys(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		rt    types.Retrieve
-		index int
-		want  string
+		name    string
+		create  func(*Reader, context.Context) []resourceWatcher
+		wantKey []string
 	}{
-		{name: "namespace", rt: types.RTNamespace, want: "core.v1.namespaces"},
-		{name: "node", rt: types.RTNode, want: "core.v1.nodes"},
-		{name: "pod", rt: types.RTPod, want: "core.v1.pods"},
-		{name: "persistent volume", rt: types.RTPersistentVolume, want: "core.v1.persistentvolumes"},
-		{name: "rbac roles", rt: types.RTRBAC, index: 0, want: "rbac.authorization.k8s.io.v1.roles"},
-		{name: "rbac rolebindings", rt: types.RTRBAC, index: 1, want: "rbac.authorization.k8s.io.v1.rolebindings"},
-		{name: "rbac clusterroles", rt: types.RTRBAC, index: 2, want: "rbac.authorization.k8s.io.v1.clusterroles"},
-		{name: "rbac clusterrolebindings", rt: types.RTRBAC, index: 3, want: "rbac.authorization.k8s.io.v1.clusterrolebindings"},
-		{name: "service", rt: types.RTService, want: "core.v1.services"},
-		{name: "deployment", rt: types.RTDeployment, want: "apps.v1.deployments"},
-		{name: "ingress", rt: types.RTIngressController, want: "networking.k8s.io.v1.ingresses"},
-		{name: "endpoint", rt: types.RTEndpoint, want: "core.v1.endpoints"},
-		{name: "unknown", rt: types.Retrieve(1 << 20), want: ""},
-		{name: "out of range", rt: types.RTRBAC, index: 4, want: ""},
+		{name: "namespace", create: (*Reader).createNamespaceWatcher, wantKey: []string{"core.v1.namespaces"}},
+		{name: "node", create: (*Reader).createNodesWatcher, wantKey: []string{"core.v1.nodes"}},
+		{name: "pod", create: (*Reader).createPodsWatcher, wantKey: []string{"core.v1.pods"}},
+		{name: "persistent volume", create: (*Reader).createPersistentVolumesWatcher, wantKey: []string{"core.v1.persistentvolumes"}},
+		{name: "rbac", create: (*Reader).createRBACWatcher, wantKey: []string{
+			"rbac.authorization.k8s.io.v1.roles",
+			"rbac.authorization.k8s.io.v1.rolebindings",
+			"rbac.authorization.k8s.io.v1.clusterroles",
+			"rbac.authorization.k8s.io.v1.clusterrolebindings",
+		}},
+		{name: "service", create: (*Reader).createServicesWatcher, wantKey: []string{"core.v1.services"}},
+		{name: "deployment", create: (*Reader).createDeploymentsWatcher, wantKey: []string{"apps.v1.deployments"}},
+		{name: "ingress", create: (*Reader).createIngressesWatcher, wantKey: []string{"networking.k8s.io.v1.ingresses"}},
+		{name: "endpoint", create: (*Reader).createEndpointsWatcher, wantKey: []string{"core.v1.endpoints"}},
 	}
 
 	for _, test := range tests {
-		got := bookmarkName(bookmarkKey(test.rt, test.index))
-		if got != test.want {
-			t.Errorf("TestBookmarkKey(%s): got %q, want %q", test.name, got, test.want)
+		watchers := test.create(&Reader{}, t.Context())
+		gotKey := make([]string, 0, len(watchers))
+		for _, watcher := range watchers {
+			gotKey = append(gotKey, bookmarkName(watcher.key))
+		}
+		if diff := pretty.Compare(test.wantKey, gotKey); diff != "" {
+			t.Errorf("TestCreateWatcherBookmarkKeys(%s): -want/+got:\n%s", test.name, diff)
 		}
 	}
 }
@@ -659,7 +664,7 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 
-			key := bookmarkKey(types.RTNamespace, 0)
+			key := namespaceGVR
 			store := storefake.New(map[schema.GroupVersionResource]string{key: test.storedRV})
 			store.SetLoadError(test.loadErr)
 			capturedOptions := []metav1.ListOptions{}
@@ -685,7 +690,7 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 				return watcherWithOnlyStop{}, nil
 			}
 
-			if err := r.watch(ctx, types.RTNamespace, []spawnWatcher{sp}); err != nil {
+			if err := r.watch(ctx, types.RTNamespace, []resourceWatcher{{key: key, spawn: sp}}); err != nil {
 				t.Fatalf("watch returned error: %v", err)
 			}
 			cancel()
@@ -736,7 +741,7 @@ func TestWatchBookmarkInvalidWatchListOptionsFallback(t *testing.T) {
 		return watcherWithOnlyStop{}, nil
 	}
 
-	if err := r.watch(ctx, types.RTNamespace, []spawnWatcher{sp}); err != nil {
+	if err := r.watch(ctx, types.RTNamespace, []resourceWatcher{{key: namespaceGVR, spawn: sp}}); err != nil {
 		t.Fatalf("watch returned error: %v", err)
 	}
 	cancel()
@@ -761,7 +766,7 @@ func TestHandleWatcherStoresBookmarks(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	key := bookmarkKey(types.RTNamespace, 0)
+	key := namespaceGVR
 	store := storefake.New(map[schema.GroupVersionResource]string{})
 	r := &Reader{
 		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
@@ -794,7 +799,7 @@ func TestHandleWatcherIgnoresBookmarkStoreError(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	key := bookmarkKey(types.RTNamespace, 0)
+	key := namespaceGVR
 	store := storefake.New(map[schema.GroupVersionResource]string{})
 	store.SetStoreError(errors.New("bookmark ConfigMap update failed"))
 	r := &Reader{
@@ -1238,7 +1243,7 @@ func TestHandleWatcher(t *testing.T) {
 		// Create initial watcher
 		w := &fakeWatcher{}
 
-		err := r.handleWatcher(ctx, types.RTNamespace, bookmarkKey(types.RTNamespace, 0), "", w, sp)
+		err := r.handleWatcher(ctx, types.RTNamespace, namespaceGVR, "", w, sp)
 
 		if test.expectExit && err != nil {
 			t.Errorf("TestHandleWatcher(%s): unexpected error: %v", test.name, err)
@@ -1669,7 +1674,7 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- r.handleWatcher(ctx, types.RTNamespace, bookmarkKey(types.RTNamespace, 0), "", &fakeWatcher{}, sp)
+			done <- r.handleWatcher(ctx, types.RTNamespace, namespaceGVR, "", &fakeWatcher{}, sp)
 		}()
 
 		time.Sleep(200 * time.Millisecond)
@@ -1735,7 +1740,7 @@ func TestHandleWatcherGoneError(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- r.handleWatcher(ctx, types.RTNamespace, bookmarkKey(types.RTNamespace, 0), "", &fakeWatcher{}, sp)
+		done <- r.handleWatcher(ctx, types.RTNamespace, namespaceGVR, "", &fakeWatcher{}, sp)
 	}()
 
 	time.Sleep(200 * time.Millisecond)

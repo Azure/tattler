@@ -77,10 +77,14 @@ func (cm *Store) Load(ctx context.Context, gvr schema.GroupVersionResource) (str
 
 // Store persists resourceVersion for gvr in the provisioned ConfigMap without changing other keys.
 func (cm *Store) Store(ctx context.Context, gvr schema.GroupVersionResource, resourceVersion string) error {
-	key := cmKey(gvr)
-	if key == "" || resourceVersion == "" {
-		return nil
+	if gvr.Empty() {
+		return errors.New("gvr is empty")
 	}
+	if resourceVersion == "" {
+		return errors.New("resourceVersion is empty")
+	}
+
+	key := cmKey(gvr)
 	return back.Retry(
 		ctx,
 		func(ctx context.Context, _ exponential.Record) error {

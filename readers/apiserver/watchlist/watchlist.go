@@ -10,7 +10,7 @@ import (
 
 	"github.com/Azure/tattler/data"
 	metrics "github.com/Azure/tattler/internal/metrics/readers"
-	bookmarkstore "github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store"
+	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/relist"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/concurrency/sync"
@@ -20,10 +20,6 @@ import (
 	"github.com/gostdlib/base/values/generics/sets"
 
 	"go.opentelemetry.io/otel/metric"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -56,7 +52,7 @@ type Reader struct {
 	spawnCh           chan promises.Promise[spawnWatcher, watch.Interface]
 	watcherSpawnDelay time.Duration
 	bookmarking       bool
-	bookmarkStore     bookmarkstore.Bookmarks
+	bookmarkStore     store.Bookmarks
 
 	dataCh        chan data.Entry
 	waitWatchers  sync.Group
@@ -71,7 +67,7 @@ type Reader struct {
 	mu      sync.Mutex
 
 	// For testing.
-	fakeWatch              func(context.Context, types.Retrieve, []spawnWatcher) error
+	fakeWatch              func(context.Context, types.Retrieve, []resourceWatcher) error
 	fakeWatchEvents        func(context.Context, watch.Interface) (string, error)
 	testHandleClientSwitch func()
 	testPerformRelist      func()
@@ -98,7 +94,7 @@ func WithRelist(d time.Duration) Option {
 }
 
 // WithBookmarkStore sets a store used to load and persist watch bookmark resourceVersions.
-func WithBookmarkStore(store bookmarkstore.Bookmarks) Option {
+func WithBookmarkStore(store store.Bookmarks) Option {
 	return func(c *Reader) error {
 		if store == nil {
 			return errors.New("bookmark store is nil")
@@ -109,7 +105,7 @@ func WithBookmarkStore(store bookmarkstore.Bookmarks) Option {
 }
 
 // rtMap is a dynamically created map of RetrieveType.
-var rtMap = map[types.Retrieve]func(ctx context.Context) []spawnWatcher{}
+var rtMap = map[types.Retrieve]func(ctx context.Context) []resourceWatcher{}
 
 func init() {
 	var i uint32 = 0
@@ -226,6 +222,11 @@ func (r *Reader) SetOut(ctx context.Context, out chan data.Entry) error {
 // spawnWatcher is a function that creates a watcher for a resource.
 type spawnWatcher func(options metav1.ListOptions) (watch.Interface, error)
 
+type resourceWatcher struct {
+	key   schema.GroupVersionResource
+	spawn spawnWatcher
+}
+
 func withResourceVersion(sp spawnWatcher, resourceVersion string) spawnWatcher {
 	if resourceVersion == "" {
 		return sp
@@ -234,31 +235,6 @@ func withResourceVersion(sp spawnWatcher, resourceVersion string) spawnWatcher {
 		options.ResourceVersion = resourceVersion
 		return sp(options)
 	}
-}
-
-func bookmarkKey(rt types.Retrieve, index int) schema.GroupVersionResource {
-	bookmarkKeys := map[types.Retrieve][]schema.GroupVersionResource{
-		types.RTNamespace:        {corev1.SchemeGroupVersion.WithResource("namespaces")},
-		types.RTNode:             {corev1.SchemeGroupVersion.WithResource("nodes")},
-		types.RTPod:              {corev1.SchemeGroupVersion.WithResource("pods")},
-		types.RTPersistentVolume: {corev1.SchemeGroupVersion.WithResource("persistentvolumes")},
-		types.RTRBAC: {
-			rbacv1.SchemeGroupVersion.WithResource("roles"),
-			rbacv1.SchemeGroupVersion.WithResource("rolebindings"),
-			rbacv1.SchemeGroupVersion.WithResource("clusterroles"),
-			rbacv1.SchemeGroupVersion.WithResource("clusterrolebindings"),
-		},
-		types.RTService:           {corev1.SchemeGroupVersion.WithResource("services")},
-		types.RTDeployment:        {appsv1.SchemeGroupVersion.WithResource("deployments")},
-		types.RTIngressController: {networkingv1.SchemeGroupVersion.WithResource("ingresses")},
-		types.RTEndpoint:          {corev1.SchemeGroupVersion.WithResource("endpoints")},
-	}
-
-	keys := bookmarkKeys[rt]
-	if index < 0 || index >= len(keys) {
-		return schema.GroupVersionResource{}
-	}
-	return keys[index]
 }
 
 func bookmarkName(gvr schema.GroupVersionResource) string {
@@ -274,33 +250,12 @@ func bookmarkName(gvr schema.GroupVersionResource) string {
 	return fmt.Sprintf("%s.%s.%s", group, gvr.Version, gvr.Resource)
 }
 
-func (r *Reader) loadBookmark(ctx context.Context, key schema.GroupVersionResource) string {
-	if !r.bookmarking || r.bookmarkStore == nil || key.Empty() {
-		return ""
-	}
-	rv, err := r.bookmarkStore.Load(ctx, key)
-	if err != nil {
-		context.Log(ctx).Error(fmt.Sprintf("error loading bookmark: %v", err))
-		return ""
-	}
-	return rv
-}
-
 func (r *Reader) storeBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) {
-	if !r.bookmarking || r.bookmarkStore == nil || key.Empty() || resourceVersion == "" {
+	if r.bookmarkStore == nil {
 		return
 	}
 	if err := r.bookmarkStore.Store(ctx, key, resourceVersion); err != nil {
 		context.Log(ctx).Error(fmt.Sprintf("error storing bookmark(%s): %v", bookmarkName(key), err))
-	}
-}
-
-func (r *Reader) clearBookmark(ctx context.Context, key schema.GroupVersionResource) {
-	if !r.bookmarking || r.bookmarkStore == nil || key.Empty() {
-		return
-	}
-	if err := r.bookmarkStore.Delete(ctx, key); err != nil {
-		context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
 	}
 }
 
@@ -352,7 +307,7 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt t
 	finished := make(chan struct{})
 	timer := time.After(30 * time.Second)
 
-	var spanWatchers []spawnWatcher
+	var spanWatchers []resourceWatcher
 	switch rt {
 	case types.RTNamespace:
 		spanWatchers = r.createNamespaceWatcher(ctx)
@@ -401,22 +356,35 @@ var spawnReqMaker = &promises.Maker[spawnWatcher, watch.Interface]{}
 // an error, the initial watcher could not be created. This will return nil
 // if the initial watcher is created, but underlying calls are in a goroutine.
 // This will handle automatic reconnection.
-func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spawnWatchers []spawnWatcher) (err error) {
+func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) (err error) {
 	if r.fakeWatch != nil {
-		return r.fakeWatch(ctx, rt, spawnWatchers)
+		return r.fakeWatch(ctx, rt, spanWatchers)
 	}
 
 	if ctx.Err() != nil {
 		return nil
 	}
 
-	watchers := make([]watch.Interface, len(spawnWatchers))
-	for i, sp := range spawnWatchers {
-		key := bookmarkKey(rt, i)
-		resourceVersion := r.loadBookmark(ctx, key)
+	watchers := make([]watch.Interface, len(spanWatchers))
+	for i, rw := range spanWatchers {
+		key := rw.key
+		sp := rw.spawn
+		var resourceVersion string
+		if r.bookmarking && r.bookmarkStore != nil && !key.Empty() {
+			var err error
+			resourceVersion, err = r.bookmarkStore.Load(ctx, key)
+			if err != nil {
+				context.Log(ctx).Error(fmt.Sprintf("error loading bookmark: %v", err))
+				resourceVersion = ""
+			}
+		}
 		w, err := r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
 		if err != nil && resourceVersion != "" {
-			r.clearBookmark(ctx, key)
+			if r.bookmarking && r.bookmarkStore != nil && !key.Empty() {
+				if err := r.bookmarkStore.Delete(ctx, key); err != nil {
+					context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
+				}
+			}
 			resourceVersion = ""
 			w, err = r.getWatcher(ctx, rt, sp)
 		}
@@ -465,7 +433,11 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 				w, err = r.getWatcher(ctx, rt, wrapped)
 				if err != nil {
 					if resourceVersion != "" {
-						r.clearBookmark(ctx, key)
+						if r.bookmarking && r.bookmarkStore != nil && !key.Empty() {
+							if err := r.bookmarkStore.Delete(ctx, key); err != nil {
+								context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
+							}
+						}
 					}
 					resourceVersion = ""
 					context.Log(ctx).Error(fmt.Sprintf("error re-creating watcher(%v): %v", rt, err))
@@ -515,8 +487,8 @@ func watchListFeatureDisabled(err error) bool {
 	if !apierrors.IsInvalid(err) {
 		return false
 	}
-	statusErr, ok := err.(apierrors.APIStatus)
-	if !ok || statusErr.Status().Details == nil {
+	var statusErr apierrors.APIStatus
+	if !errors.As(err, &statusErr) || statusErr.Status().Details == nil {
 		return false
 	}
 	for _, cause := range statusErr.Status().Details.Causes {

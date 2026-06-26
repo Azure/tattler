@@ -70,7 +70,6 @@ func TestNew(t *testing.T) {
 func TestLoad(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	key := corev1.SchemeGroupVersion.WithResource("pods")
 	dataKey := cmKey(key)
 
@@ -104,6 +103,7 @@ func TestLoad(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			ctx := t.Context()
 
 			clientset := fake.NewSimpleClientset(test.objects...)
 			store, err := New(clientset, testNamespace, testName)
@@ -131,7 +131,7 @@ func TestLoad(t *testing.T) {
 func TestStore(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	nonNilErr := func(err error) bool { return err != nil }
 	key := corev1.SchemeGroupVersion.WithResource("pods")
 	dataKey := cmKey(key)
 	otherKey := cmKey(corev1.SchemeGroupVersion.WithResource("services"))
@@ -151,37 +151,39 @@ func TestStore(t *testing.T) {
 			rv:      "100",
 			wantErr: apierrors.IsNotFound,
 			check: func(t *testing.T, clientset *fake.Clientset) {
-				_, err := clientset.CoreV1().ConfigMaps(testNamespace).Get(ctx, testName, metav1.GetOptions{})
+				_, err := clientset.CoreV1().ConfigMaps(testNamespace).Get(t.Context(), testName, metav1.GetOptions{})
 				if !apierrors.IsNotFound(err) {
 					t.Fatalf("Get() got err %v, want not found", err)
 				}
 			},
 		},
 		{
-			name: "ignores empty gvr",
+			name: "errors on empty gvr",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{},
 			}},
 			gvr: schema.GroupVersionResource{},
 			rv:  "100",
+			wantErr: nonNilErr,
 			check: func(t *testing.T, clientset *fake.Clientset) {
-				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if len(configMap.Data) != 0 {
 					t.Fatalf("ConfigMap data got %#v, want empty", configMap.Data)
 				}
 			},
 		},
 		{
-			name: "ignores empty resourceVersion",
+			name: "errors on empty resourceVersion",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{},
 			}},
 			gvr: key,
 			rv:  "",
+			wantErr: nonNilErr,
 			check: func(t *testing.T, clientset *fake.Clientset) {
-				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if len(configMap.Data) != 0 {
 					t.Fatalf("ConfigMap data got %#v, want empty", configMap.Data)
 				}
@@ -195,7 +197,7 @@ func TestStore(t *testing.T) {
 			gvr: key,
 			rv:  "100",
 			check: func(t *testing.T, clientset *fake.Clientset) {
-				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if got := configMap.Data[dataKey]; got != "100" {
 					t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
 				}
@@ -210,7 +212,7 @@ func TestStore(t *testing.T) {
 			gvr: key,
 			rv:  "100",
 			check: func(t *testing.T, clientset *fake.Clientset) {
-				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if got := configMap.Data[dataKey]; got != "100" {
 					t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
 				}
@@ -238,7 +240,7 @@ func TestStore(t *testing.T) {
 				})
 			},
 			check: func(t *testing.T, clientset *fake.Clientset) {
-				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if got := configMap.Data[dataKey]; got != "100" {
 					t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
 				}
@@ -249,6 +251,7 @@ func TestStore(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			ctx := t.Context()
 
 			clientset := fake.NewSimpleClientset(test.objects...)
 			if test.setup != nil {
@@ -277,7 +280,6 @@ func TestStore(t *testing.T) {
 func TestDelete(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	key := corev1.SchemeGroupVersion.WithResource("pods")
 	dataKey := cmKey(key)
 	otherKey := cmKey(corev1.SchemeGroupVersion.WithResource("services"))
@@ -300,7 +302,7 @@ func TestDelete(t *testing.T) {
 			}},
 			gvr: schema.GroupVersionResource{},
 			check: func(t *testing.T, clientset *fake.Clientset) {
-				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if got := configMap.Data[dataKey]; got != "100" {
 					t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "100")
 				}
@@ -314,7 +316,7 @@ func TestDelete(t *testing.T) {
 			}},
 			gvr: key,
 			check: func(t *testing.T, clientset *fake.Clientset) {
-				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if got := configMap.Data[otherKey]; got != "50" {
 					t.Fatalf("ConfigMap data[%q] got %q, want %q", otherKey, got, "50")
 				}
@@ -328,7 +330,7 @@ func TestDelete(t *testing.T) {
 			}},
 			gvr: key,
 			check: func(t *testing.T, clientset *fake.Clientset) {
-				configMap := getConfigMap(t, ctx, clientset, testNamespace, testName)
+				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if _, ok := configMap.Data[dataKey]; ok {
 					t.Fatalf("ConfigMap data[%q] still present, want removed", dataKey)
 				}
@@ -342,6 +344,7 @@ func TestDelete(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			ctx := t.Context()
 
 			clientset := fake.NewSimpleClientset(test.objects...)
 			store, err := New(clientset, testNamespace, testName)
