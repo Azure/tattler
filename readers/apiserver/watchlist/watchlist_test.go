@@ -296,7 +296,7 @@ func TestRun(t *testing.T) {
 		ch            chan data.Entry
 		retrieves     types.Retrieve
 		cancelWatcher bool
-		fakeWatch     func(context.Context, types.Retrieve, []resourceWatcher) error
+		fakeWatch     func(context.Context, types.Retrieve, []watchSpec) error
 		wantRetrieves []types.Retrieve
 		wantErr       bool
 	}{
@@ -314,7 +314,7 @@ func TestRun(t *testing.T) {
 			name:      "Error: Namespace watch returns error",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNamespace,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return errors.New("error")
 			},
@@ -325,7 +325,7 @@ func TestRun(t *testing.T) {
 			name:      "Error: PersistentVolume watch returns error",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTPersistentVolume,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return errors.New("error")
 			},
@@ -336,7 +336,7 @@ func TestRun(t *testing.T) {
 			name:      "Error: Node watch returns error",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNode,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return errors.New("error")
 			},
@@ -347,7 +347,7 @@ func TestRun(t *testing.T) {
 			name:      "Namespace success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNamespace,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -357,7 +357,7 @@ func TestRun(t *testing.T) {
 			name:      "PersistentVolume success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTPersistentVolume,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -367,7 +367,7 @@ func TestRun(t *testing.T) {
 			name:      "Node success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNode,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -377,7 +377,7 @@ func TestRun(t *testing.T) {
 			name:      "Pod success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTPod,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -387,7 +387,7 @@ func TestRun(t *testing.T) {
 			name:      "RBAC success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTRBAC,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -397,7 +397,7 @@ func TestRun(t *testing.T) {
 			name:      "Services success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTService,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -407,7 +407,7 @@ func TestRun(t *testing.T) {
 			name:      "Deployments success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTDeployment,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -417,7 +417,7 @@ func TestRun(t *testing.T) {
 			name:      "Ingress Controller success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTIngressController,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -427,7 +427,7 @@ func TestRun(t *testing.T) {
 			name:      "Endpoint success",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTEndpoint,
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -438,7 +438,7 @@ func TestRun(t *testing.T) {
 			ch:   make(chan data.Entry, 1),
 			retrieves: (types.RTNamespace | types.RTPersistentVolume | types.RTNode | types.RTPod | types.RTRBAC | types.RTService | types.RTDeployment |
 				types.RTIngressController | types.RTEndpoint),
-			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) error {
+			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
 				watchesCalled = append(watchesCalled, rt)
 				return nil
 			},
@@ -518,7 +518,7 @@ func TestWatch(t *testing.T) {
 	tests := []struct {
 		name         string
 		ctx          context.Context
-		spanWatchers []resourceWatcher
+		spanWatchers []watchSpec
 		eventWatcher func(ctx context.Context, watcher watch.Interface) (string, error)
 		wantErr      bool
 	}{
@@ -529,7 +529,7 @@ func TestWatch(t *testing.T) {
 		{
 			name: "Watching had connection error and we haven't connected before",
 			ctx:  ctx,
-			spanWatchers: []resourceWatcher{
+			spanWatchers: []watchSpec{
 				{spawn: func(options metav1.ListOptions) (watch.Interface, error) {
 					return nil, errors.New("error")
 				}},
@@ -539,7 +539,7 @@ func TestWatch(t *testing.T) {
 		{
 			name: "Watching had connection error but we have connected before",
 			ctx:  ctx,
-			spanWatchers: []resourceWatcher{
+			spanWatchers: []watchSpec{
 				{spawn: func(options metav1.ListOptions) (watch.Interface, error) {
 					return watcherWithOnlyStop{}, nil
 				}},
@@ -598,7 +598,7 @@ func TestCreateWatcherBookmarkKeys(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		create  func(*Reader, context.Context) []resourceWatcher
+		create  func(*Reader, context.Context) []watchSpec
 		wantKey []string
 	}{
 		{name: "namespace", create: (*Reader).createNamespaceWatcher, wantKey: []string{"core.v1.namespaces"}},
@@ -621,7 +621,7 @@ func TestCreateWatcherBookmarkKeys(t *testing.T) {
 		watchers := test.create(&Reader{}, t.Context())
 		gotKey := make([]string, 0, len(watchers))
 		for _, watcher := range watchers {
-			gotKey = append(gotKey, bookmarkName(watcher.key))
+			gotKey = append(gotKey, bookmarkName(watcher.gvr))
 		}
 		if diff := pretty.Compare(test.wantKey, gotKey); diff != "" {
 			t.Errorf("TestCreateWatcherBookmarkKeys(%s): -want/+got:\n%s", test.name, diff)
@@ -690,7 +690,7 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 				return watcherWithOnlyStop{}, nil
 			}
 
-			if err := r.watch(ctx, types.RTNamespace, []resourceWatcher{{key: key, spawn: sp}}); err != nil {
+			if err := r.watch(ctx, types.RTNamespace, []watchSpec{{gvr: key, spawn: sp}}); err != nil {
 				t.Fatalf("watch returned error: %v", err)
 			}
 			cancel()
@@ -741,7 +741,7 @@ func TestWatchBookmarkInvalidWatchListOptionsFallback(t *testing.T) {
 		return watcherWithOnlyStop{}, nil
 	}
 
-	if err := r.watch(ctx, types.RTNamespace, []resourceWatcher{{key: namespaceGVR, spawn: sp}}); err != nil {
+	if err := r.watch(ctx, types.RTNamespace, []watchSpec{{gvr: namespaceGVR, spawn: sp}}); err != nil {
 		t.Fatalf("watch returned error: %v", err)
 	}
 	cancel()

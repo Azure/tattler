@@ -67,7 +67,7 @@ type Reader struct {
 	mu      sync.Mutex
 
 	// For testing.
-	fakeWatch              func(context.Context, types.Retrieve, []resourceWatcher) error
+	fakeWatch              func(context.Context, types.Retrieve, []watchSpec) error
 	fakeWatchEvents        func(context.Context, watch.Interface) (string, error)
 	testHandleClientSwitch func()
 	testPerformRelist      func()
@@ -105,7 +105,7 @@ func WithBookmarkStore(store store.Bookmarks) Option {
 }
 
 // rtMap is a dynamically created map of RetrieveType.
-var rtMap = map[types.Retrieve]func(ctx context.Context) []resourceWatcher{}
+var rtMap = map[types.Retrieve]func(ctx context.Context) []watchSpec{}
 
 func init() {
 	var i uint32 = 0
@@ -222,8 +222,8 @@ func (r *Reader) SetOut(ctx context.Context, out chan data.Entry) error {
 // spawnWatcher is a function that creates a watcher for a resource.
 type spawnWatcher func(options metav1.ListOptions) (watch.Interface, error)
 
-type resourceWatcher struct {
-	key   schema.GroupVersionResource
+type watchSpec struct {
+	gvr   schema.GroupVersionResource
 	spawn spawnWatcher
 }
 
@@ -307,27 +307,27 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt t
 	finished := make(chan struct{})
 	timer := time.After(30 * time.Second)
 
-	var spanWatchers []resourceWatcher
+	var ws []watchSpec
 	switch rt {
 	case types.RTNamespace:
-		spanWatchers = r.createNamespaceWatcher(ctx)
+		ws = r.createNamespaceWatcher(ctx)
 	case types.RTNode:
-		spanWatchers = r.createNodesWatcher(ctx)
+		ws = r.createNodesWatcher(ctx)
 	case types.RTPod:
-		spanWatchers = r.createPodsWatcher(ctx)
+		ws = r.createPodsWatcher(ctx)
 	case types.RTPersistentVolume:
-		spanWatchers = r.createPersistentVolumesWatcher(ctx)
+		ws = r.createPersistentVolumesWatcher(ctx)
 	case types.RTRBAC:
 		timer = time.After(2 * time.Minute) // This one spawns 4 watchers
-		spanWatchers = r.createRBACWatcher(ctx)
+		ws = r.createRBACWatcher(ctx)
 	case types.RTService:
-		spanWatchers = r.createServicesWatcher(ctx)
+		ws = r.createServicesWatcher(ctx)
 	case types.RTDeployment:
-		spanWatchers = r.createDeploymentsWatcher(ctx)
+		ws = r.createDeploymentsWatcher(ctx)
 	case types.RTIngressController:
-		spanWatchers = r.createIngressesWatcher(ctx)
+		ws = r.createIngressesWatcher(ctx)
 	case types.RTEndpoint:
-		spanWatchers = r.createEndpointsWatcher(ctx)
+		ws = r.createEndpointsWatcher(ctx)
 	default:
 		return fmt.Errorf("unknown resource type: %v", rt)
 	}
@@ -340,7 +340,7 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt t
 		}
 	}()
 
-	if err := r.watch(ctx, rt, spanWatchers); err != nil {
+	if err := r.watch(ctx, rt, ws); err != nil {
 		return fmt.Errorf("error starting %s watcher: %v", rt, err)
 	}
 	if ctx.Err() != nil {
@@ -356,18 +356,18 @@ var spawnReqMaker = &promises.Maker[spawnWatcher, watch.Interface]{}
 // an error, the initial watcher could not be created. This will return nil
 // if the initial watcher is created, but underlying calls are in a goroutine.
 // This will handle automatic reconnection.
-func (r *Reader) watch(ctx context.Context, rt types.Retrieve, spanWatchers []resourceWatcher) (err error) {
+func (r *Reader) watch(ctx context.Context, rt types.Retrieve, ws []watchSpec) (err error) {
 	if r.fakeWatch != nil {
-		return r.fakeWatch(ctx, rt, spanWatchers)
+		return r.fakeWatch(ctx, rt, ws)
 	}
 
 	if ctx.Err() != nil {
 		return nil
 	}
 
-	watchers := make([]watch.Interface, len(spanWatchers))
-	for i, rw := range spanWatchers {
-		key := rw.key
+	watchers := make([]watch.Interface, len(ws))
+	for i, rw := range ws {
+		key := rw.gvr
 		sp := rw.spawn
 		var resourceVersion string
 		if r.bookmarking && r.bookmarkStore != nil && !key.Empty() {
