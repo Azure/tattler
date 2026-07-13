@@ -63,21 +63,16 @@ func New(clientset kubernetes.Interface, namespace, name string, options ...Opti
 // Load returns the stored resourceVersion for gvr, or an empty string if none is set.
 func (cm *Store) Load(ctx context.Context, gvr schema.GroupVersionResource) (string, error) {
 	var resourceVersion string
-	err := back.Retry(
+	err := retryAPIServer(
 		ctx,
-		func(ctx context.Context, _ exponential.Record) error {
+		func(ctx context.Context) error {
 			configMap, err := cm.clientset.CoreV1().ConfigMaps(cm.namespace).Get(ctx, cm.name, metav1.GetOptions{})
-			if apierrors.IsNotFound(err) {
-				// The caller provisions the ConfigMap, so retrying cannot make a missing ConfigMap appear.
-				return fmt.Errorf("%w: %w", err, exponential.ErrPermanent)
-			}
 			if err != nil {
 				return err
 			}
 			resourceVersion = configMap.Data[cmKey(gvr)]
 			return nil
 		},
-		exponential.WithMaxAttempts(maxAttempts),
 	)
 	if err != nil {
 		return "", err
@@ -93,16 +88,12 @@ func (cm *Store) Store(ctx context.Context, gvr schema.GroupVersionResource, res
 	if resourceVersion == "" {
 		return errors.New("resourceVersion is empty")
 	}
-
 	key := cmKey(gvr)
-	return back.Retry(
+
+	return retryAPIServer(
 		ctx,
-		func(ctx context.Context, _ exponential.Record) error {
+		func(ctx context.Context) error {
 			configMap, err := cm.clientset.CoreV1().ConfigMaps(cm.namespace).Get(ctx, cm.name, metav1.GetOptions{})
-			if apierrors.IsNotFound(err) {
-				// The caller provisions the ConfigMap, so retrying cannot make a missing ConfigMap appear.
-				return fmt.Errorf("%w: %w", err, exponential.ErrPermanent)
-			}
 			if err != nil {
 				return err
 			}
@@ -118,7 +109,6 @@ func (cm *Store) Store(ctx context.Context, gvr schema.GroupVersionResource, res
 			_, err = cm.clientset.CoreV1().ConfigMaps(cm.namespace).Update(ctx, configMap, metav1.UpdateOptions{})
 			return err
 		},
-		exponential.WithMaxAttempts(maxAttempts),
 	)
 }
 
@@ -132,9 +122,9 @@ func (cm *Store) Delete(ctx context.Context, gvr schema.GroupVersionResource, re
 		return errors.New("resourceVersion is empty")
 	}
 	changed := false
-	err := back.Retry(
+	err := retryAPIServer(
 		ctx,
-		func(ctx context.Context, _ exponential.Record) error {
+		func(ctx context.Context) error {
 			configMap, err := cm.clientset.CoreV1().ConfigMaps(cm.namespace).Get(ctx, cm.name, metav1.GetOptions{})
 			if apierrors.IsNotFound(err) {
 				return nil
@@ -155,7 +145,6 @@ func (cm *Store) Delete(ctx context.Context, gvr schema.GroupVersionResource, re
 			_, err = cm.clientset.CoreV1().ConfigMaps(cm.namespace).Update(ctx, configMap, metav1.UpdateOptions{})
 			return err
 		},
-		exponential.WithMaxAttempts(maxAttempts),
 	)
 	if err != nil {
 		return err
@@ -164,6 +153,32 @@ func (cm *Store) Delete(ctx context.Context, gvr schema.GroupVersionResource, re
 		return store.ErrBookmarkChanged
 	}
 	return nil
+}
+
+func retryAPIServer(ctx context.Context, operation func(context.Context) error) error {
+	var lastErr error
+	err := back.Retry(
+		ctx,
+		func(ctx context.Context, _ exponential.Record) error {
+			lastErr = permanentAPIServerError(operation(ctx))
+			return lastErr
+		},
+		exponential.WithMaxAttempts(maxAttempts),
+	)
+	if errors.Is(err, exponential.ErrPermanent) && lastErr != nil && !errors.Is(lastErr, exponential.ErrPermanent) {
+		return lastErr
+	}
+	return err
+}
+
+func permanentAPIServerError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsInvalid(err) {
+		return fmt.Errorf("%w: %w", err, exponential.ErrPermanent)
+	}
+	return err
 }
 
 func (*Store) Package(private.Package) {}

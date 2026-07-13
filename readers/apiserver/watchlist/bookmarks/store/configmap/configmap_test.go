@@ -408,6 +408,45 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestRetryAPIServerErrorClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		err           error
+		wantAttempts  int
+		wantPermanent bool
+	}{
+		{name: "not found", err: apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, testName), wantAttempts: 1, wantPermanent: true},
+		{name: "forbidden", err: apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, testName, errors.New("forbidden")), wantAttempts: 1, wantPermanent: true},
+		{name: "unauthorized", err: apierrors.NewUnauthorized("unauthorized"), wantAttempts: 1, wantPermanent: true},
+		{name: "invalid", err: apierrors.NewInvalid(schema.GroupKind{Kind: "ConfigMap"}, testName, nil), wantAttempts: 1, wantPermanent: true},
+		{name: "conflict", err: apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, testName, errors.New("conflict")), wantAttempts: maxAttempts},
+		{name: "transient", err: errors.New("temporary API outage"), wantAttempts: maxAttempts},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			attempts := 0
+			err := retryAPIServer(t.Context(), func(context.Context) error {
+				attempts++
+				return test.err
+			})
+			if attempts != test.wantAttempts {
+				t.Fatalf("retryAPIServer() made %d attempts, want %d", attempts, test.wantAttempts)
+			}
+			if got := errors.Is(err, exponential.ErrPermanent); got != test.wantPermanent {
+				t.Fatalf("retryAPIServer() permanent error got %v, want %v: %v", got, test.wantPermanent, err)
+			}
+			if !errors.Is(err, test.err) {
+				t.Fatalf("retryAPIServer() got err %v, want wrapping %v", err, test.err)
+			}
+		})
+	}
+}
+
 func getConfigMap(t *testing.T, ctx context.Context, clientset kubernetes.Interface, namespace, name string) *corev1.ConfigMap {
 	t.Helper()
 

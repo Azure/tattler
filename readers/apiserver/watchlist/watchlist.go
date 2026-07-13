@@ -94,6 +94,7 @@ func WithRelist(d time.Duration) Option {
 }
 
 // WithBookmarkStore sets a store used to load and persist watch bookmark resourceVersions.
+// On Kubernetes versions before 1.29, the Reader continues without bookmark persistence.
 func WithBookmarkStore(store store.Bookmarks) Option {
 	return func(c *Reader) error {
 		if store == nil {
@@ -155,10 +156,15 @@ func New(ctx context.Context, clientset kubernetes.Interface, retrieveTypes type
 		}
 	}
 
-	if ver[0] != 1 || ver[1] >= 30 {
+	if ver[0] != 1 || ver[1] >= 29 {
 		r.bookmarking = true
 	}
-
+	if r.bookmarkStore != nil && !r.bookmarking {
+		context.Log(ctx).Warn(
+			"bookmark persistence disabled because Kubernetes does not support watch lists",
+			"kubernetesVersion", fmt.Sprintf("%d.%d", ver[0], ver[1]),
+		)
+	}
 	// Make sure they passed a valid retrieveTypes.
 	found := false
 	for rt := range rtMap {
@@ -250,33 +256,33 @@ func bookmarkName(gvr schema.GroupVersionResource) string {
 	return fmt.Sprintf("%s.%s.%s", group, gvr.Version, gvr.Resource)
 }
 
-func (r *Reader) storeBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) {
+func (r *Reader) storeBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) error {
 	if r.bookmarkStore == nil {
-		return
+		return nil
 	}
 	if err := r.bookmarkStore.Store(ctx, key, resourceVersion); err != nil {
 		context.Log(ctx).Error(fmt.Sprintf("error storing bookmark(%s): %v", bookmarkName(key), err))
+		return err
 	}
+	return nil
 }
 
-func (r *Reader) clearStaleBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) string {
+func (r *Reader) clearStaleBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) (string, error) {
 	if r.bookmarkStore == nil || key.Empty() {
-		return ""
+		return "", nil
 	}
 	err := r.bookmarkStore.Delete(ctx, key, resourceVersion)
 	if err == nil {
-		return ""
+		return "", nil
 	}
 	if !errors.Is(err, store.ErrBookmarkChanged) {
-		context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
-		return ""
+		return "", fmt.Errorf("error clearing bookmark(%s): %w", bookmarkName(key), err)
 	}
 	replacement, err := r.bookmarkStore.Load(ctx, key)
 	if err != nil {
-		context.Log(ctx).Error(fmt.Sprintf("error loading replacement bookmark(%s): %v", bookmarkName(key), err))
-		return ""
+		return "", fmt.Errorf("error loading replacement bookmark(%s): %w", bookmarkName(key), err)
 	}
-	return replacement
+	return replacement, nil
 }
 
 // spawnLister is a function that creates a lister for a resource.
@@ -399,8 +405,12 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, ws []watchSpec) (
 			}
 		}
 		w, err := r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
-		if err != nil && resourceVersion != "" && staleResourceVersion(err) {
-			resourceVersion = r.clearStaleBookmark(ctx, key, resourceVersion)
+		for err != nil && resourceVersion != "" && rejectedResourceVersion(err) {
+			replacement, clearErr := r.clearStaleBookmark(ctx, key, resourceVersion)
+			if clearErr != nil {
+				return clearErr
+			}
+			resourceVersion = replacement
 			w, err = r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
 		}
 		if err != nil {
@@ -428,7 +438,6 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 		rv, err := r.watchEvents(ctx, key, w)
 		if rv != "" {
 			resourceVersion = rv
-			r.storeBookmark(ctx, key, rv)
 		}
 		if err != nil {
 			context.Log(ctx).Error(fmt.Sprintf("error watching %v events: %v", rt, err))
@@ -440,15 +449,25 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 		err = back.Retry(
 			ctx,
 			func(ctx context.Context, _ exponential.Record) error {
+				attemptedResourceVersion := resourceVersion != ""
 				wrapped := sp
-				if r.bookmarking && resourceVersion != "" {
+				if r.bookmarking && attemptedResourceVersion {
 					wrapped = withResourceVersion(sp, resourceVersion)
 				}
 				var err error
 				w, err = r.getWatcher(ctx, rt, wrapped)
 				if err != nil {
-					if resourceVersion != "" && staleResourceVersion(err) {
-						resourceVersion = r.clearStaleBookmark(ctx, key, resourceVersion)
+					if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+						return fmt.Errorf("%w: %w", err, exponential.ErrPermanent)
+					}
+					if attemptedResourceVersion && rejectedResourceVersion(err) {
+						replacement, clearErr := r.clearStaleBookmark(ctx, key, resourceVersion)
+						if clearErr != nil {
+							return clearErr
+						}
+						resourceVersion = replacement
+					} else if !attemptedResourceVersion && invalidWatchRequest(err) {
+						return fmt.Errorf("%w: %w", err, exponential.ErrPermanent)
 					}
 					context.Log(ctx).Error(fmt.Sprintf("error re-creating watcher(%v): %v", rt, err))
 				}
@@ -460,7 +479,6 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 			return err
 		}
 	}
-	panic("unreachable")
 }
 
 // connectWatcher takes a request to create a watcher and creates it, sending the result back on the promise.
@@ -479,6 +497,7 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[sp
 	for req := range ch {
 		watcher, err := req.In(so)
 		if watchListFeatureDisabled(err) && r.bookmarking && watchListEnabled {
+			context.Log(ctx).Warn("WatchList feature is unavailable; falling back to a standard watch")
 			watchListEnabled = false
 			so.ResourceVersionMatch = ""
 			so.SendInitialEvents = nil
@@ -509,9 +528,17 @@ func watchListFeatureDisabled(err error) bool {
 	return false
 }
 
-// staleResourceVersion reports whether the APIServer error proves that the resource version is no longer valid.
 func staleResourceVersion(err error) bool {
 	return apierrors.IsResourceExpired(err) || apierrors.IsGone(err)
+}
+
+func invalidWatchRequest(err error) bool {
+	return apierrors.IsBadRequest(err) || apierrors.IsInvalid(err)
+}
+
+// rejectedResourceVersion reports whether the APIServer rejected the supplied resource version as stale or invalid.
+func rejectedResourceVersion(err error) bool {
+	return staleResourceVersion(err) || invalidWatchRequest(err)
 }
 
 // watchEvents watches the events from a watcher and sends them to the cache.
@@ -526,6 +553,7 @@ func (r *Reader) watchEvents(ctx context.Context, key schema.GroupVersionResourc
 	ch := watcher.ResultChan()
 
 	var resourceVersion string
+	var storedResourceVersion string
 
 	stopper := sync.OnceFunc(
 		func() {
@@ -537,7 +565,9 @@ func (r *Reader) watchEvents(ctx context.Context, key schema.GroupVersionResourc
 		rv, err := r.watchEvent(ctx, ch, stopper)
 		if rv != "" {
 			resourceVersion = rv
-			r.storeBookmark(ctx, key, rv)
+			if rv != storedResourceVersion && r.storeBookmark(ctx, key, rv) == nil {
+				storedResourceVersion = rv
+			}
 		}
 		// Always an io.EOF, so we don't log it, we just exit.
 		if err != nil {
