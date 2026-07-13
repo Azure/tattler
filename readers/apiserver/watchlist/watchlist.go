@@ -379,7 +379,7 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, ws []watchSpec) (
 			}
 		}
 		w, err := r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
-		if err != nil && resourceVersion != "" {
+		if err != nil && resourceVersion != "" && staleResourceVersion(err) {
 			if r.bookmarking && r.bookmarkStore != nil && !key.Empty() {
 				if err := r.bookmarkStore.Delete(ctx, key); err != nil {
 					context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
@@ -432,14 +432,14 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 				var err error
 				w, err = r.getWatcher(ctx, rt, wrapped)
 				if err != nil {
-					if resourceVersion != "" {
+					if resourceVersion != "" && staleResourceVersion(err) {
 						if r.bookmarking && r.bookmarkStore != nil && !key.Empty() {
 							if err := r.bookmarkStore.Delete(ctx, key); err != nil {
 								context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
 							}
 						}
+						resourceVersion = ""
 					}
-					resourceVersion = ""
 					context.Log(ctx).Error(fmt.Sprintf("error re-creating watcher(%v): %v", rt, err))
 				}
 				return err
@@ -497,6 +497,11 @@ func watchListFeatureDisabled(err error) bool {
 		}
 	}
 	return false
+}
+
+// staleResourceVersion reports whether the APIServer error proves that the resource version is no longer valid.
+func staleResourceVersion(err error) bool {
+	return apierrors.IsResourceExpired(err) || apierrors.IsGone(err)
 }
 
 // watchEvents watches the events from a watcher and sends them to the cache.

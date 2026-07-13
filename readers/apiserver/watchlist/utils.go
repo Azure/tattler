@@ -20,10 +20,10 @@ func (r *Reader) getWatcher(ctx context.Context, rt types.Retrieve, sp spawnWatc
 
 	resp, err := promise.Get(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("error creating %v watcher: %v", rt, err)
+		return nil, fmt.Errorf("error creating %v watcher: %w", rt, err)
 	}
 	if resp.Err != nil {
-		return nil, fmt.Errorf("error creating %v watcher: %v", rt, resp.Err)
+		return nil, fmt.Errorf("error creating %v watcher: %w", rt, resp.Err)
 	}
 
 	return resp.V, nil
