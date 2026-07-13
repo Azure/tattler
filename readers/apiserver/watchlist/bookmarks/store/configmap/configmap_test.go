@@ -35,9 +35,32 @@ func TestNew(t *testing.T) {
 		clientset kubernetes.Interface
 		namespace string
 		cmName    string
+		options   []Option
 		wantErr   bool
 	}{
 		{name: "valid", clientset: clientset, namespace: testNamespace, cmName: testName},
+		{
+			name:      "valid option",
+			clientset: clientset,
+			namespace: testNamespace,
+			cmName:    testName,
+			options: []Option{func(store *Store) error {
+				if store.clientset != clientset || store.namespace != testNamespace || store.name != testName {
+					return errors.New("option got uninitialized store")
+				}
+				return nil
+			}},
+		},
+		{
+			name:      "option error",
+			clientset: clientset,
+			namespace: testNamespace,
+			cmName:    testName,
+			options: []Option{func(*Store) error {
+				return errors.New("option error")
+			}},
+			wantErr: true,
+		},
 		{name: "nil clientset", clientset: nil, namespace: testNamespace, cmName: testName, wantErr: true},
 		{name: "empty namespace", clientset: clientset, namespace: "  ", cmName: testName, wantErr: true},
 		{name: "empty name", clientset: clientset, namespace: testNamespace, cmName: "  ", wantErr: true},
@@ -47,7 +70,7 @@ func TestNew(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			store, err := New(test.clientset, test.namespace, test.cmName)
+			store, err := New(test.clientset, test.namespace, test.cmName, test.options...)
 			if test.wantErr {
 				if err == nil {
 					t.Fatal("New() got nil err, want error")

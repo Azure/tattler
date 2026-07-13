@@ -28,8 +28,11 @@ type Store struct {
 	name      string
 }
 
+// Option configures a Store.
+type Option func(*Store) error
+
 // New returns a Store that reads and writes bookmark resourceVersions to an existing ConfigMap.
-func New(clientset kubernetes.Interface, namespace, name string) (*Store, error) {
+func New(clientset kubernetes.Interface, namespace, name string, options ...Option) (*Store, error) {
 	namespace = strings.TrimSpace(namespace)
 	name = strings.TrimSpace(name)
 
@@ -43,11 +46,17 @@ func New(clientset kubernetes.Interface, namespace, name string) (*Store, error)
 		return nil, errors.New("name is empty")
 	}
 
-	return &Store{
+	store := &Store{
 		clientset: clientset,
 		namespace: namespace,
 		name:      name,
-	}, nil
+	}
+	for _, option := range options {
+		if err := option(store); err != nil {
+			return nil, err
+		}
+	}
+	return store, nil
 }
 
 // Load returns the stored resourceVersion for gvr, or an empty string if none is set.
