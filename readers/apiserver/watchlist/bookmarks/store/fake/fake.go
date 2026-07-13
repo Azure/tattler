@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/internal/private"
 	"github.com/gostdlib/base/context"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -28,19 +29,19 @@ func New(values map[schema.GroupVersionResource]string) *Store {
 	return &Store{values: copied}
 }
 
-func (store *Store) Load(ctx context.Context, key schema.GroupVersionResource) (string, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (fakeStore *Store) Load(ctx context.Context, key schema.GroupVersionResource) (string, error) {
+	fakeStore.mu.Lock()
+	defer fakeStore.mu.Unlock()
 
-	if store.loadErr != nil {
-		return "", store.loadErr
+	if fakeStore.loadErr != nil {
+		return "", fakeStore.loadErr
 	}
-	return store.values[key], nil
+	return fakeStore.values[key], nil
 }
 
-func (store *Store) Store(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (fakeStore *Store) Store(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) error {
+	fakeStore.mu.Lock()
+	defer fakeStore.mu.Unlock()
 
 	if key.Empty() {
 		return errors.New("gvr is empty")
@@ -48,56 +49,69 @@ func (store *Store) Store(ctx context.Context, key schema.GroupVersionResource, 
 	if resourceVersion == "" {
 		return errors.New("resourceVersion is empty")
 	}
-	if store.storeErr != nil {
-		return store.storeErr
+	if fakeStore.storeErr != nil {
+		return fakeStore.storeErr
 	}
-	if store.stores == nil {
-		store.stores = map[schema.GroupVersionResource]string{}
+	if fakeStore.stores == nil {
+		fakeStore.stores = map[schema.GroupVersionResource]string{}
 	}
-	store.stores[key] = resourceVersion
-	store.values[key] = resourceVersion
+	fakeStore.stores[key] = resourceVersion
+	fakeStore.values[key] = resourceVersion
 	return nil
 }
 
-func (store *Store) Delete(ctx context.Context, key schema.GroupVersionResource) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (fakeStore *Store) Delete(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) error {
+	fakeStore.mu.Lock()
+	defer fakeStore.mu.Unlock()
 
-	store.deletes = append(store.deletes, key)
-	delete(store.values, key)
+	if key.Empty() {
+		return nil
+	}
+	if resourceVersion == "" {
+		return errors.New("resourceVersion is empty")
+	}
+	storedResourceVersion, ok := fakeStore.values[key]
+	if !ok {
+		return nil
+	}
+	if storedResourceVersion != resourceVersion {
+		return store.ErrBookmarkChanged
+	}
+	fakeStore.deletes = append(fakeStore.deletes, key)
+	delete(fakeStore.values, key)
 	return nil
 }
 
 func (*Store) Package(private.Package) {}
 
 // SetLoadError configures the error returned by Load for tests covering degraded bookmark storage.
-func (store *Store) SetLoadError(err error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (fakeStore *Store) SetLoadError(err error) {
+	fakeStore.mu.Lock()
+	defer fakeStore.mu.Unlock()
 
-	store.loadErr = err
+	fakeStore.loadErr = err
 }
 
 // SetStoreError configures the error returned by Store for tests covering failed bookmark updates.
-func (store *Store) SetStoreError(err error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (fakeStore *Store) SetStoreError(err error) {
+	fakeStore.mu.Lock()
+	defer fakeStore.mu.Unlock()
 
-	store.storeErr = err
+	fakeStore.storeErr = err
 }
 
 // Stored returns the value most recently stored for key so tests can assert bookmark writes.
-func (store *Store) Stored(key schema.GroupVersionResource) string {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (fakeStore *Store) Stored(key schema.GroupVersionResource) string {
+	fakeStore.mu.Lock()
+	defer fakeStore.mu.Unlock()
 
-	return store.stores[key]
+	return fakeStore.stores[key]
 }
 
 // Deletes returns the keys deleted from the store so tests can assert stale bookmark cleanup.
-func (store *Store) Deletes() []schema.GroupVersionResource {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (fakeStore *Store) Deletes() []schema.GroupVersionResource {
+	fakeStore.mu.Lock()
+	defer fakeStore.mu.Unlock()
 
-	return append([]schema.GroupVersionResource(nil), store.deletes...)
+	return append([]schema.GroupVersionResource(nil), fakeStore.deletes...)
 }

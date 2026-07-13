@@ -633,13 +633,14 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		storedRV   string
-		loadErr    error
-		watchErr   error
-		wantRVs    []string
-		wantDelete bool
-		wantErr    bool
+		name          string
+		storedRV      string
+		loadErr       error
+		watchErr      error
+		replacementRV string
+		wantRVs       []string
+		wantDelete    bool
+		wantErr       bool
 	}{
 		{
 			name:     "Success: uses stored bookmark on startup",
@@ -652,6 +653,13 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 			watchErr:   apierrors.NewResourceExpired("the resourceVersion is too old"),
 			wantRVs:    []string{"500", ""},
 			wantDelete: true,
+		},
+		{
+			name:          "Success: preserves replacement bookmark after startup failure",
+			storedRV:      "100",
+			watchErr:      apierrors.NewResourceExpired("the resourceVersion is too old"),
+			replacementRV: "500",
+			wantRVs:       []string{"100", "500"},
 		},
 		{
 			name:     "Error: preserves bookmark after transient startup failure",
@@ -693,6 +701,11 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 			sp := func(options metav1.ListOptions) (watch.Interface, error) {
 				capturedOptions = append(capturedOptions, options)
 				if test.watchErr != nil && options.ResourceVersion == test.storedRV {
+					if test.replacementRV != "" {
+						if err := store.Store(ctx, key, test.replacementRV); err != nil {
+							t.Fatalf("Store() got err %v, want nil", err)
+						}
+					}
 					return nil, test.watchErr
 				}
 				return watcherWithOnlyStop{}, nil
@@ -1619,6 +1632,7 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 		bookmarking             bool
 		bookmarkRV              string
 		spawnErr                error
+		replacementRV           string
 		wantRVOnFirstReconnect  string
 		wantRVOnSecondReconnect string
 		wantDelete              bool
@@ -1646,6 +1660,15 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 			spawnErr:                errors.New("temporary API outage"),
 			wantRVOnFirstReconnect:  "100",
 			wantRVOnSecondReconnect: "100",
+		},
+		{
+			name:                    "Success: stale watcher preserves replacement bookmark",
+			bookmarking:             true,
+			bookmarkRV:              "100",
+			spawnErr:                apierrors.NewResourceExpired("the resourceVersion is too old"),
+			replacementRV:           "500",
+			wantRVOnFirstReconnect:  "100",
+			wantRVOnSecondReconnect: "500",
 		},
 		{
 			name:                    "Success: no bookmarking does not set resource version",
@@ -1690,6 +1713,11 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 			spawnCallCount++
 			capturedOptions = append(capturedOptions, options)
 			if test.spawnErr != nil && spawnCallCount == 1 {
+				if test.replacementRV != "" {
+					if err := store.Store(ctx, namespaceGVR, test.replacementRV); err != nil {
+						t.Fatalf("Store() got err %v, want nil", err)
+					}
+				}
 				return nil, test.spawnErr
 			}
 			return &fakeWatcher{}, nil

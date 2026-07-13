@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/internal/private"
 	"github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/retry/exponential"
@@ -121,13 +122,17 @@ func (cm *Store) Store(ctx context.Context, gvr schema.GroupVersionResource, res
 	)
 }
 
-// Delete removes the stored resourceVersion for gvr from the ConfigMap and leaves all other keys intact.
-func (cm *Store) Delete(ctx context.Context, gvr schema.GroupVersionResource) error {
+// Delete removes the stored resourceVersion for gvr only if it still matches resourceVersion.
+func (cm *Store) Delete(ctx context.Context, gvr schema.GroupVersionResource, resourceVersion string) error {
 	key := cmKey(gvr)
 	if key == "" {
 		return nil
 	}
-	return back.Retry(
+	if resourceVersion == "" {
+		return errors.New("resourceVersion is empty")
+	}
+	changed := false
+	err := back.Retry(
 		ctx,
 		func(ctx context.Context, _ exponential.Record) error {
 			configMap, err := cm.clientset.CoreV1().ConfigMaps(cm.namespace).Get(ctx, cm.name, metav1.GetOptions{})
@@ -137,7 +142,12 @@ func (cm *Store) Delete(ctx context.Context, gvr schema.GroupVersionResource) er
 			if err != nil {
 				return err
 			}
-			if _, ok := configMap.Data[key]; !ok {
+			storedResourceVersion, ok := configMap.Data[key]
+			if !ok {
+				return nil
+			}
+			if storedResourceVersion != resourceVersion {
+				changed = true
 				return nil
 			}
 
@@ -147,6 +157,13 @@ func (cm *Store) Delete(ctx context.Context, gvr schema.GroupVersionResource) er
 		},
 		exponential.WithMaxAttempts(maxAttempts),
 	)
+	if err != nil {
+		return err
+	}
+	if changed {
+		return store.ErrBookmarkChanged
+	}
+	return nil
 }
 
 func (*Store) Package(private.Package) {}

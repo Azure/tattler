@@ -259,6 +259,26 @@ func (r *Reader) storeBookmark(ctx context.Context, key schema.GroupVersionResou
 	}
 }
 
+func (r *Reader) clearStaleBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) string {
+	if r.bookmarkStore == nil || key.Empty() {
+		return ""
+	}
+	err := r.bookmarkStore.Delete(ctx, key, resourceVersion)
+	if err == nil {
+		return ""
+	}
+	if !errors.Is(err, store.ErrBookmarkChanged) {
+		context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
+		return ""
+	}
+	replacement, err := r.bookmarkStore.Load(ctx, key)
+	if err != nil {
+		context.Log(ctx).Error(fmt.Sprintf("error loading replacement bookmark(%s): %v", bookmarkName(key), err))
+		return ""
+	}
+	return replacement
+}
+
 // spawnLister is a function that creates a lister for a resource.
 type spawnLister func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error)
 
@@ -380,13 +400,8 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, ws []watchSpec) (
 		}
 		w, err := r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
 		if err != nil && resourceVersion != "" && staleResourceVersion(err) {
-			if r.bookmarking && r.bookmarkStore != nil && !key.Empty() {
-				if err := r.bookmarkStore.Delete(ctx, key); err != nil {
-					context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
-				}
-			}
-			resourceVersion = ""
-			w, err = r.getWatcher(ctx, rt, sp)
+			resourceVersion = r.clearStaleBookmark(ctx, key, resourceVersion)
+			w, err = r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
 		}
 		if err != nil {
 			return err
@@ -433,12 +448,7 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 				w, err = r.getWatcher(ctx, rt, wrapped)
 				if err != nil {
 					if resourceVersion != "" && staleResourceVersion(err) {
-						if r.bookmarking && r.bookmarkStore != nil && !key.Empty() {
-							if err := r.bookmarkStore.Delete(ctx, key); err != nil {
-								context.Log(ctx).Error(fmt.Sprintf("error clearing bookmark(%s): %v", bookmarkName(key), err))
-							}
-						}
-						resourceVersion = ""
+						resourceVersion = r.clearStaleBookmark(ctx, key, resourceVersion)
 					}
 					context.Log(ctx).Error(fmt.Sprintf("error re-creating watcher(%v): %v", rt, err))
 				}

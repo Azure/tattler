@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store"
 	"github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/retry/exponential"
 
@@ -186,8 +187,8 @@ func TestStore(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{},
 			}},
-			gvr: schema.GroupVersionResource{},
-			rv:  "100",
+			gvr:     schema.GroupVersionResource{},
+			rv:      "100",
 			wantErr: nonNilErr,
 			check: func(t *testing.T, clientset *fake.Clientset) {
 				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
@@ -202,8 +203,8 @@ func TestStore(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{},
 			}},
-			gvr: key,
-			rv:  "",
+			gvr:     key,
+			rv:      "",
 			wantErr: nonNilErr,
 			check: func(t *testing.T, clientset *fake.Clientset) {
 				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
@@ -311,11 +312,14 @@ func TestDelete(t *testing.T) {
 		name    string
 		objects []runtime.Object
 		gvr     schema.GroupVersionResource
+		rv      string
+		wantErr error
 		check   func(*testing.T, *fake.Clientset)
 	}{
 		{
 			name: "ignores missing configmap",
 			gvr:  key,
+			rv:   "100",
 		},
 		{
 			name: "ignores empty gvr",
@@ -324,6 +328,7 @@ func TestDelete(t *testing.T) {
 				Data:       map[string]string{dataKey: "100"},
 			}},
 			gvr: schema.GroupVersionResource{},
+			rv:  "100",
 			check: func(t *testing.T, clientset *fake.Clientset) {
 				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if got := configMap.Data[dataKey]; got != "100" {
@@ -338,6 +343,7 @@ func TestDelete(t *testing.T) {
 				Data:       map[string]string{otherKey: "50"},
 			}},
 			gvr: key,
+			rv:  "100",
 			check: func(t *testing.T, clientset *fake.Clientset) {
 				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if got := configMap.Data[otherKey]; got != "50" {
@@ -346,12 +352,29 @@ func TestDelete(t *testing.T) {
 			},
 		},
 		{
-			name: "removes bookmark",
+			name: "preserves replaced bookmark",
+			objects: []runtime.Object{&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
+				Data:       map[string]string{dataKey: "500", otherKey: "50"},
+			}},
+			gvr:     key,
+			rv:      "100",
+			wantErr: store.ErrBookmarkChanged,
+			check: func(t *testing.T, clientset *fake.Clientset) {
+				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
+				if got := configMap.Data[dataKey]; got != "500" {
+					t.Fatalf("ConfigMap data[%q] got %q, want %q", dataKey, got, "500")
+				}
+			},
+		},
+		{
+			name: "removes matching bookmark",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{dataKey: "100", otherKey: "50"},
 			}},
 			gvr: key,
+			rv:  "100",
 			check: func(t *testing.T, clientset *fake.Clientset) {
 				configMap := getConfigMap(t, t.Context(), clientset, testNamespace, testName)
 				if _, ok := configMap.Data[dataKey]; ok {
@@ -374,8 +397,9 @@ func TestDelete(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New() got err %v, want nil", err)
 			}
-			if err := store.Delete(ctx, test.gvr); err != nil {
-				t.Fatalf("Delete() got err %v, want nil", err)
+			err = store.Delete(ctx, test.gvr, test.rv)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("Delete() got err %v, want %v", err, test.wantErr)
 			}
 			if test.check != nil {
 				test.check(t, clientset)
