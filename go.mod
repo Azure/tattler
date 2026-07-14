@@ -1,6 +1,6 @@
 module github.com/Azure/tattler
 
-go 1.25.9
+go 1.25.12
 
 require (
 	github.com/gostdlib/base v0.0.0-20260507153524-4db2868c35c5
