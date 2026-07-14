@@ -1,9 +1,9 @@
 module github.com/Azure/tattler
 
-go 1.25.12
+go 1.26.5
 
 require (
-	github.com/gostdlib/base v0.0.0-20260507153524-4db2868c35c5
+	github.com/gostdlib/base v0.0.0-20260713182956-dddb0d62a7e9
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/client_model v0.6.2
 	go.opentelemetry.io/otel/exporters/prometheus v0.59.1
@@ -15,7 +15,7 @@ require (
 )
 
 require (
-	github.com/Azure/retry v0.0.0-20250701224816-85c6a88f883d // indirect
+	github.com/Azure/retry v0.0.0-20260629192600-3a6893b45f6d // indirect
 	github.com/andybalholm/brotli v1.1.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.2 // indirect
