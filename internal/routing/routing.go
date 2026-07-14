@@ -24,6 +24,7 @@ import (
 	"fmt"
 
 	"github.com/Azure/tattler/data"
+	metrics "github.com/Azure/tattler/internal/metrics/readers"
 	"github.com/gostdlib/base/context"
 )
 
@@ -126,6 +127,7 @@ func (b *Router) Start(ctx context.Context) error {
 // handleInput receives data on the input channel and pushes it to the appropriate receivers.
 func (b *Router) handleInput(ctx context.Context) {
 	for entry := range b.in {
+		metrics.DataEntry(ctx, entry)
 		for _, r := range b.routes {
 			if err := b.push(ctx, r, entry); err != nil {
 				context.Log(ctx).Error(err.Error())
