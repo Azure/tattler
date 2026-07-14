@@ -1,5 +1,7 @@
 github.com/Azure/retry v0.0.0-20250701224816-85c6a88f883d h1:LkwGxfhHKQwhnJPnTPBccEsc3fyWRhr8uKWo06Uo82E=
 github.com/Azure/retry v0.0.0-20250701224816-85c6a88f883d/go.mod h1:xBDReDRRnjBagqi1R/yGVevV4dE2HAxsuG75AstLY9w=
+github.com/Azure/retry v0.0.0-20260629192600-3a6893b45f6d h1:LDae6A4C5JhqkKaJvx9wFtWdmlfVL7EFhVGJRtfABBs=
+github.com/Azure/retry v0.0.0-20260629192600-3a6893b45f6d/go.mod h1:xQFIQIwXSMk/0NQ+wc/V42PudRntsK0J0ub+5zdBGes=
 github.com/andybalholm/brotli v1.1.1 h1:PR2pgnyFznKEugtsUo0xLdDop5SKXd5Qf5ysW+7XdTA=
 github.com/andybalholm/brotli v1.1.1/go.mod h1:05ib4cKhjx3OQYUY22hTVd34Bc8upXjOLL2rKwwZBoA=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
@@ -48,10 +50,13 @@ github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
 github.com/google/pprof v0.0.0-20241029153458-d1b30febd7db h1:097atOisP2aRj7vFgYQBbFN4U4JNXUNYpxael3UzMyo=
 github.com/google/pprof v0.0.0-20241029153458-d1b30febd7db/go.mod h1:vavhavw2zAxS5dIdcRluK6cSGGPlZynqzFM8NdvU144=
+github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e h1:ijClszYn+mADRFY17kjQEVQ1XRhq2/JR1M3sGqeJoxs=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/gostdlib/base v0.0.0-20260507153524-4db2868c35c5 h1:fuzBjAN5Poj8VrvAVpJDuGNEVoEskRKHEgO6BUGKYSM=
 github.com/gostdlib/base v0.0.0-20260507153524-4db2868c35c5/go.mod h1:ENP5u4Xsc9GFnIjpPN83UP5AxOfYY4seh2UJpOGuzqs=
+github.com/gostdlib/base v0.0.0-20260713182956-dddb0d62a7e9 h1:IGpPClsBJ5uPV0eiyLu3DOAVeyzFIL8BI9fYwEIElis=
+github.com/gostdlib/base v0.0.0-20260713182956-dddb0d62a7e9/go.mod h1:yaB1oWKfSpJUYL8DK2Nt3uwl8Yb7NguPTnxDP2mv5C8=
 github.com/grafana/regexp v0.0.0-20240518133315-a468a5bfb3bc h1:GN2Lv3MGO7AS6PrRoT6yV5+wkrOpcszoIsO4+4ds248=
 github.com/grafana/regexp v0.0.0-20240518133315-a468a5bfb3bc/go.mod h1:+JKpmjMGhpgPL+rXZ5nsZieVzvarn86asRlBg4uNGnk=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1 h1:X5VWvz21y3gzm9Nw/kaUeku/1+uBhcekkmy4IkffJww=
