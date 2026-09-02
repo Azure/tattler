@@ -49,7 +49,7 @@ type Reader struct {
 	relistInterval time.Duration
 	relister       lister
 
-	spawnCh           chan promises.Promise[spawnWatcher, watch.Interface]
+	spawnCh           chan promises.Value[spawnWatcher, watch.Interface]
 	watcherSpawnDelay time.Duration
 	bookmarking       bool
 	bookmarkStore     store.Bookmarks
@@ -146,7 +146,7 @@ func New(ctx context.Context, clientset kubernetes.Interface, retrieveTypes type
 		relister:          relister,
 		cancel:            cancel,
 		closeCh:           make(chan struct{}),
-		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+		spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 		watcherSpawnDelay: 10 * time.Second,
 	}
 
@@ -483,7 +483,7 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 
 // connectWatcher takes a request to create a watcher and creates it, sending the result back on the promise.
 // This prevents thundering herds of watchers trying to connect at the same time.
-func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Promise[spawnWatcher, watch.Interface]) {
+func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Value[spawnWatcher, watch.Interface]) {
 	watchListEnabled := r.bookmarking
 	so := metav1.ListOptions{Watch: true}
 	if r.bookmarking {

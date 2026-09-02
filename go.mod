@@ -3,7 +3,7 @@ module github.com/Azure/tattler
 go 1.26.5
 
 require (
-	github.com/gostdlib/base v0.0.0-20260713182956-dddb0d62a7e9
+	github.com/gostdlib/base v0.0.0-20260901204851-78f5be8d6635
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/client_model v0.6.2
 	go.opentelemetry.io/otel/exporters/prometheus v0.59.1

@@ -200,7 +200,7 @@ func TestClose(t *testing.T) {
 			closeCh: make(chan struct{}),
 			dataCh:  make(chan data.Entry, 1),
 			cancel:  func() { didCancel = true },
-			spawnCh: make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			spawnCh: make(chan promises.Value[spawnWatcher, watch.Interface]),
 		}
 
 		if test.started {
@@ -559,7 +559,7 @@ func TestWatch(t *testing.T) {
 
 		r := &Reader{
 			fakeWatchEvents:   test.eventWatcher,
-			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 			watcherSpawnDelay: 10 * time.Millisecond, // Use shorter delay for tests
 		}
 
@@ -723,7 +723,7 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 			capturedOptions := []metav1.ListOptions{}
 
 			r := &Reader{
-				spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+				spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 				watcherSpawnDelay: 1 * time.Millisecond,
 				bookmarking:       true,
 				bookmarkStore:     store,
@@ -784,7 +784,7 @@ func TestWatchBookmarkInvalidWatchListOptionsFallback(t *testing.T) {
 
 	capturedOptions := []metav1.ListOptions{}
 	r := &Reader{
-		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+		spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 		watcherSpawnDelay: 1 * time.Millisecond,
 		bookmarking:       true,
 		fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
@@ -1256,7 +1256,7 @@ func TestHandleWatcher(t *testing.T) {
 		spawnIndex := 0
 
 		r := &Reader{
-			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 			watcherSpawnDelay: 1 * time.Millisecond,
 			fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
 				if watchEventIndex < len(test.watchEventErrors) {
@@ -1352,7 +1352,7 @@ func TestGetWatcher(t *testing.T) {
 		defer cancel()
 
 		r := &Reader{
-			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 			watcherSpawnDelay: 1 * time.Millisecond, // Short for testing
 		}
 
@@ -1389,7 +1389,7 @@ func TestConnectWatcherThrottling(t *testing.T) {
 	defer cancel()
 
 	r := &Reader{
-		spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+		spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 		watcherSpawnDelay: 50 * time.Millisecond, // Short delay for testing
 	}
 
@@ -1614,7 +1614,7 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 
 		var capturedOptions metav1.ListOptions
 		r := &Reader{
-			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 			watcherSpawnDelay: 1 * time.Millisecond,
 			bookmarking:       test.bookmarking,
 		}
@@ -1745,7 +1745,7 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 		store := storefake.New(map[schema.GroupVersionResource]string{namespaceGVR: test.bookmarkRV})
 
 		r := &Reader{
-			spawnCh:           make(chan promises.Promise[spawnWatcher, watch.Interface]),
+			spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 			watcherSpawnDelay: 1 * time.Millisecond,
 			bookmarking:       test.bookmarking,
 			bookmarkStore:     store,
