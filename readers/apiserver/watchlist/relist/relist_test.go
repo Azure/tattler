@@ -686,7 +686,7 @@ func BenchmarkRelisterList(b *testing.B) {
 	ctx := b.Context()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ch, err := r.List(ctx, types.RTPod)
 		if err != nil {
 			b.Fatalf("BenchmarkRelisterList: List() error = %v", err)
@@ -725,7 +725,7 @@ func BenchmarkRelisterListWithPagination(b *testing.B) {
 	ctx := b.Context()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		callCount = 0 // Reset for each benchmark iteration
 		ch, err := r.List(ctx, types.RTPod)
 		if err != nil {
