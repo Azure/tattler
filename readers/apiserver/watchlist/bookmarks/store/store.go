@@ -1,10 +1,9 @@
 package store
 
 import (
-	"errors"
-
 	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/internal/private"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 

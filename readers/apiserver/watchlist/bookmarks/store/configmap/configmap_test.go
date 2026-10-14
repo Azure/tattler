@@ -1,11 +1,11 @@
 package configmap
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
 	"github.com/gostdlib/base/retry/exponential"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,42 +36,19 @@ func TestNew(t *testing.T) {
 		clientset kubernetes.Interface
 		namespace string
 		cmName    string
-		options   []Option
 		wantErr   bool
 	}{
-		{name: "valid", clientset: clientset, namespace: testNamespace, cmName: testName},
-		{
-			name:      "valid option",
-			clientset: clientset,
-			namespace: testNamespace,
-			cmName:    testName,
-			options: []Option{func(store *Store) error {
-				if store.clientset != clientset || store.namespace != testNamespace || store.name != testName {
-					return errors.New("option got uninitialized store")
-				}
-				return nil
-			}},
-		},
-		{
-			name:      "option error",
-			clientset: clientset,
-			namespace: testNamespace,
-			cmName:    testName,
-			options: []Option{func(*Store) error {
-				return errors.New("option error")
-			}},
-			wantErr: true,
-		},
-		{name: "nil clientset", clientset: nil, namespace: testNamespace, cmName: testName, wantErr: true},
-		{name: "empty namespace", clientset: clientset, namespace: "  ", cmName: testName, wantErr: true},
-		{name: "empty name", clientset: clientset, namespace: testNamespace, cmName: "  ", wantErr: true},
+		{name: "Success: a clientset, namespace and name give a store", clientset: clientset, namespace: testNamespace, cmName: testName},
+		{name: "Error: the clientset is nil", clientset: nil, namespace: testNamespace, cmName: testName, wantErr: true},
+		{name: "Error: the namespace is empty", clientset: clientset, namespace: "  ", cmName: testName, wantErr: true},
+		{name: "Error: the name is empty", clientset: clientset, namespace: testNamespace, cmName: "  ", wantErr: true},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			store, err := New(test.clientset, test.namespace, test.cmName, test.options...)
+			store, err := New(test.clientset, test.namespace, test.cmName)
 			if test.wantErr {
 				if err == nil {
 					t.Fatal("New() got nil err, want error")
@@ -104,18 +81,18 @@ func TestLoad(t *testing.T) {
 		wantErr func(error) bool
 	}{
 		{
-			name:    "requires provisioned configmap",
+			name:    "Error: the ConfigMap must already exist",
 			wantErr: apierrors.IsNotFound,
 		},
 		{
-			name: "returns empty string for missing bookmark",
+			name: "Success: a missing bookmark loads as empty",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{},
 			}},
 		},
 		{
-			name: "returns stored bookmark",
+			name: "Success: loads a stored bookmark",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{dataKey: "100"},
@@ -170,7 +147,7 @@ func TestStore(t *testing.T) {
 		wantErr func(error) bool
 	}{
 		{
-			name:    "requires provisioned configmap",
+			name:    "Error: the ConfigMap must already exist",
 			gvr:     key,
 			rv:      "100",
 			wantErr: apierrors.IsNotFound,
@@ -182,7 +159,7 @@ func TestStore(t *testing.T) {
 			},
 		},
 		{
-			name: "errors on empty gvr",
+			name: "Error: the gvr is empty",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{},
@@ -198,7 +175,7 @@ func TestStore(t *testing.T) {
 			},
 		},
 		{
-			name: "errors on empty resourceVersion",
+			name: "Error: the resourceVersion is empty",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{},
@@ -214,7 +191,7 @@ func TestStore(t *testing.T) {
 			},
 		},
 		{
-			name: "initializes data",
+			name: "Success: initializes the ConfigMap data",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 			}},
@@ -228,7 +205,7 @@ func TestStore(t *testing.T) {
 			},
 		},
 		{
-			name: "preserves other bookmarks",
+			name: "Success: preserves other bookmarks",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{otherKey: "50"},
@@ -246,7 +223,7 @@ func TestStore(t *testing.T) {
 			},
 		},
 		{
-			name: "retries update conflicts",
+			name: "Success: retries update conflicts",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{},
@@ -317,12 +294,12 @@ func TestDelete(t *testing.T) {
 		check   func(*testing.T, *fake.Clientset)
 	}{
 		{
-			name: "ignores missing configmap",
+			name: "Success: ignores a missing ConfigMap",
 			gvr:  key,
 			rv:   "100",
 		},
 		{
-			name: "ignores empty gvr",
+			name: "Success: ignores an empty gvr",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{dataKey: "100"},
@@ -337,7 +314,7 @@ func TestDelete(t *testing.T) {
 			},
 		},
 		{
-			name: "ignores missing bookmark",
+			name: "Success: ignores a missing bookmark",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{otherKey: "50"},
@@ -352,7 +329,7 @@ func TestDelete(t *testing.T) {
 			},
 		},
 		{
-			name: "preserves replaced bookmark",
+			name: "Error: a replaced bookmark is kept and reported",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{dataKey: "500", otherKey: "50"},
@@ -368,7 +345,7 @@ func TestDelete(t *testing.T) {
 			},
 		},
 		{
-			name: "removes matching bookmark",
+			name: "Success: removes a matching bookmark",
 			objects: []runtime.Object{&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: testName, Namespace: testNamespace},
 				Data:       map[string]string{dataKey: "100", otherKey: "50"},
@@ -417,12 +394,13 @@ func TestRetryAPIServerErrorClassification(t *testing.T) {
 		wantAttempts  int
 		wantPermanent bool
 	}{
-		{name: "not found", err: apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, testName), wantAttempts: 1, wantPermanent: true},
-		{name: "forbidden", err: apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, testName, errors.New("forbidden")), wantAttempts: 1, wantPermanent: true},
-		{name: "unauthorized", err: apierrors.NewUnauthorized("unauthorized"), wantAttempts: 1, wantPermanent: true},
-		{name: "invalid", err: apierrors.NewInvalid(schema.GroupKind{Kind: "ConfigMap"}, testName, nil), wantAttempts: 1, wantPermanent: true},
-		{name: "conflict", err: apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, testName, errors.New("conflict")), wantAttempts: maxAttempts},
-		{name: "transient", err: errors.New("temporary API outage"), wantAttempts: maxAttempts},
+		{name: "Error: not found is permanent", err: apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, testName), wantAttempts: 1, wantPermanent: true},
+		{name: "Error: forbidden is permanent", err: apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, testName, errors.New("forbidden")), wantAttempts: 1, wantPermanent: true},
+		{name: "Error: unauthorized is permanent", err: apierrors.NewUnauthorized("unauthorized"), wantAttempts: 1, wantPermanent: true},
+		{name: "Error: invalid is permanent", err: apierrors.NewInvalid(schema.GroupKind{Kind: "ConfigMap"}, testName, nil), wantAttempts: 1, wantPermanent: true},
+		{name: "Error: a conflict is retried", err: apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, testName, errors.New("conflict")), wantAttempts: maxAttempts},
+		{name: "Error: a transient error is retried", err: errors.New("temporary API outage"), wantAttempts: maxAttempts},
+		{name: "Success: no error makes one attempt", wantAttempts: 1},
 	}
 
 	for _, test := range tests {

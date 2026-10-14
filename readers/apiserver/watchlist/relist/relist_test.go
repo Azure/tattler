@@ -1,18 +1,21 @@
 package relist
 
 import (
-	"errors"
 	"testing"
 	"time"
 
 	"github.com/Azure/tattler/data"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
 	"github.com/gostdlib/base/retry/exponential"
+	"github.com/gostdlib/base/values/chans"
 	"github.com/gostdlib/base/values/generics/promises"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -53,18 +56,20 @@ func createTestEntries(pods []*corev1.Pod) []data.Entry {
 }
 
 func TestNew(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		clientset ClientsetInterface
 		wantErr   bool
 	}{
 		{
-			name:      "valid clientset",
+			name:      "Success: a clientset gives a relister with pagers",
 			clientset: fake.NewSimpleClientset(),
 			wantErr:   false,
 		},
 		{
-			name:      "nil clientset",
+			name:      "Error: the clientset is nil",
 			clientset: nil,
 			wantErr:   true,
 		},
@@ -95,6 +100,8 @@ func TestNew(t *testing.T) {
 }
 
 func TestMakePagers(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewSimpleClientset()
 	pagers := makePagers(clientset)
 
@@ -141,21 +148,18 @@ func TestRelister(t *testing.T) {
 	entries := createTestEntries(pods)
 
 	tests := []struct {
-		name              string
-		rt                types.Retrieve
-		setupPagers       func() map[types.Retrieve][]listPage
-		setupClientset    func() *fake.Clientset
-		contextSetup      func() (context.Context, context.CancelFunc)
-		wantEntries       int
-		wantCallErr       bool
-		wantStreamErr     bool
-		wantCancellation  bool
-		validateEntries   func([]data.Entry, *testing.T)
-		validateBehavior  func(context.Context, context.CancelFunc, chan promises.Response[data.Entry], *testing.T)
+		name                string
+		rt                  types.Retrieve
+		setupPagers         func() map[types.Retrieve][]listPage
+		setupClientset      func() *fake.Clientset
+		wantEntries         int
+		wantCallErr         bool
+		wantStreamErr       bool
+		validateEntries     func([]data.Entry, *testing.T)
 		expectChannelClosed bool
 	}{
 		{
-			name: "successful list",
+			name: "Success: lists every entry",
 			rt:   types.RTPod,
 			setupPagers: func() map[types.Retrieve][]listPage {
 				return map[types.Retrieve][]listPage{
@@ -165,7 +169,7 @@ func TestRelister(t *testing.T) {
 			wantEntries: 3,
 		},
 		{
-			name: "empty list",
+			name: "Success: an empty list closes with no entries",
 			rt:   types.RTPod,
 			setupPagers: func() map[types.Retrieve][]listPage {
 				return map[types.Retrieve][]listPage{
@@ -174,7 +178,7 @@ func TestRelister(t *testing.T) {
 			},
 		},
 		{
-			name: "unknown resource type",
+			name: "Error: the resource type has no pager",
 			rt:   types.Retrieve(999), // Invalid resource type
 			setupPagers: func() map[types.Retrieve][]listPage {
 				return map[types.Retrieve][]listPage{
@@ -184,7 +188,7 @@ func TestRelister(t *testing.T) {
 			wantCallErr: true,
 		},
 		{
-			name: "pager returns error",
+			name: "Error: the pager fails and the error is sent on the channel",
 			rt:   types.RTPod,
 			setupPagers: func() map[types.Retrieve][]listPage {
 				return map[types.Retrieve][]listPage{
@@ -194,7 +198,7 @@ func TestRelister(t *testing.T) {
 			wantStreamErr: true, // Error comes through channel
 		},
 		{
-			name: "pagination",
+			name: "Success: follows continue tokens across pages",
 			rt:   types.RTPod,
 			setupPagers: func() map[types.Retrieve][]listPage {
 				pods1 := createTestPods(2)
@@ -220,87 +224,7 @@ func TestRelister(t *testing.T) {
 			wantEntries: 3, // 2 + 1 from pagination
 		},
 		{
-			name: "context cancellation",
-			rt:   types.RTPod,
-			setupPagers: func() map[types.Retrieve][]listPage {
-				return map[types.Retrieve][]listPage{
-					types.RTPod: {func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
-						select {
-						case <-ctx.Done():
-							return nil, "", context.Cause(ctx)
-						case <-time.After(100 * time.Millisecond):
-							return createTestEntries(createTestPods(1)), "", nil
-						}
-					}},
-				}
-			},
-			contextSetup: func() (context.Context, context.CancelFunc) {
-				ctx, cancel := context.WithCancel(context.Background())
-				return ctx, cancel
-			},
-			validateBehavior: func(ctx context.Context, cancel context.CancelFunc, ch chan promises.Response[data.Entry], t *testing.T) {
-				// Cancel context immediately
-				cancel()
-
-				// Read from channel - should get an error
-				var gotError bool
-				for response := range ch {
-					if response.Err != nil {
-						gotError = true
-						// Accept either context.Canceled or ErrRetryCanceled (when using WithTesting())
-						if !errors.Is(response.Err, context.Canceled) && !errors.Is(response.Err, exponential.ErrRetryCanceled) {
-							t.Errorf("expected context.Canceled or ErrRetryCanceled error, got %v", response.Err)
-						}
-						break
-					}
-				}
-
-				if !gotError {
-					t.Error("expected error due to context cancellation")
-				}
-			},
-		},
-		{
-			name: "context cancellation during iteration",
-			rt:   types.RTPod,
-			setupPagers: func() map[types.Retrieve][]listPage {
-				pods := createTestPods(10)
-				entries := createTestEntries(pods)
-				return map[types.Retrieve][]listPage{
-					types.RTPod: {func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
-						return entries, "", nil
-					}},
-				}
-			},
-			contextSetup: func() (context.Context, context.CancelFunc) {
-				return context.WithCancel(context.Background())
-			},
-			validateBehavior: func(ctx context.Context, cancel context.CancelFunc, ch chan promises.Response[data.Entry], t *testing.T) {
-				// Read one entry, then cancel
-				entryCount := 0
-				var gotError bool
-				for response := range ch {
-					if response.Err != nil {
-						gotError = true
-						break
-					}
-					entryCount++
-					if entryCount == 1 {
-						cancel() // Cancel after reading first entry
-					}
-				}
-
-				if !gotError {
-					t.Error("expected error due to context cancellation during iteration")
-				}
-
-				if entryCount == 0 {
-					t.Error("should have read at least one entry before cancellation")
-				}
-			},
-		},
-		{
-			name: "integration with fake clientset",
+			name: "Success: lists pods from a fake clientset as watchlist snapshots",
 			rt:   types.RTPod,
 			setupClientset: func() *fake.Clientset {
 				pod1 := &corev1.Pod{
@@ -338,7 +262,7 @@ func TestRelister(t *testing.T) {
 			},
 		},
 		{
-			name: "RBAC integration with all four types",
+			name: "Success: RBAC lists all four RBAC types",
 			rt:   types.RTRBAC,
 			setupClientset: func() *fake.Clientset {
 				role := &rbacv1.Role{
@@ -392,7 +316,7 @@ func TestRelister(t *testing.T) {
 			},
 		},
 		{
-			name: "multiple listers for single resource type",
+			name: "Success: a type with several listers sends every lister's entries",
 			rt:   types.RTRBAC,
 			setupPagers: func() map[types.Retrieve][]listPage {
 				// Simulate RBAC with multiple listers (Roles, RoleBindings, ClusterRoles, ClusterRoleBindings)
@@ -413,7 +337,7 @@ func TestRelister(t *testing.T) {
 			wantEntries: 6, // 2 + 3 + 1 from three listers
 		},
 		{
-			name: "multiple listers with error in second lister",
+			name: "Error: a failing lister stops the list after the earlier listers' entries",
 			rt:   types.RTRBAC,
 			setupPagers: func() map[types.Retrieve][]listPage {
 				pods1 := createTestPods(2)
@@ -430,7 +354,7 @@ func TestRelister(t *testing.T) {
 			wantStreamErr: true,
 		},
 		{
-			name: "channel closure",
+			name: "Success: the channel is closed after the last entry",
 			rt:   types.RTPod,
 			setupPagers: func() map[types.Retrieve][]listPage {
 				return map[types.Retrieve][]listPage{
@@ -446,38 +370,28 @@ func TestRelister(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
 			var r *Relister
 			var err error
-			
+
 			// Setup relister
-			if test.setupClientset != nil {
-				clientset := test.setupClientset()
-				r, err = New(clientset)
+			switch {
+			case test.setupClientset != nil:
+				r, err = New(test.setupClientset())
 				if err != nil {
-					t.Fatalf("New() error = %v", err)
+					t.Fatalf("TestRelister(%s): New() error = %v", test.name, err)
 				}
-			} else if test.setupPagers != nil {
+			case test.setupPagers != nil:
 				r = &Relister{pagers: test.setupPagers()}
 			}
 
-			// Setup context
-			ctx := context.Background()
-			var cancel context.CancelFunc
-			if test.contextSetup != nil {
-				ctx, cancel = test.contextSetup()
+			ch, err := r.List(t.Context(), test.rt)
+			// relistType's retry stops on exponential.ErrPermanent, and an unknown type never succeeds.
+			if err != nil && !errors.Is(err, exponential.ErrPermanent) {
+				t.Errorf("TestRelister(%s): List() error was not permanent", test.name)
 			}
-
-			ch, err := r.List(ctx, test.rt)
 			if ec.continueTest(test.name, test.wantCallErr, err, t) {
-				if !errors.Is(err, exponential.ErrPermanent) {
-					t.Errorf("wanted error was not permanent")
-				}
-				return
-			}
-
-			// Use custom validation if provided
-			if test.validateBehavior != nil {
-				test.validateBehavior(ctx, cancel, ch, t)
 				return
 			}
 
@@ -508,19 +422,112 @@ func TestRelister(t *testing.T) {
 
 			// Check channel closure if needed
 			if test.expectChannelClosed {
-				select {
-				case response, ok := <-ch:
-					if ok {
-						t.Errorf("channel should be closed, but received: %v", response)
-					}
-				default:
-					// This is expected - channel is closed
+				guard, guardCancel := context.WithTimeout(t.Context(), 5*time.Second)
+				response, res := chans.Get(guard, ch)
+				guardCancel()
+				if res != chans.ResultClosed {
+					t.Errorf("TestRelister(%s): got chans.Get() result %v (%v), want %v", test.name, res, response, chans.ResultClosed)
 				}
 			}
 		})
 	}
 }
 
+// TestListCancel covers List when its context is cancelled. Unlike TestRelister, the reader here cancels at a chosen
+// point and the channel must still close.
+func TestListCancel(t *testing.T) {
+	t.Parallel()
+
+	// waitingPager returns one entry after 100ms, or the context's error if it is cancelled first.
+	waitingPager := func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+		if _, res := chans.Get(ctx, time.After(100*time.Millisecond)); res != chans.ResultOK {
+			return nil, "", context.Cause(ctx)
+		}
+		return createTestEntries(createTestPods(1)), "", nil
+	}
+
+	tests := []struct {
+		name  string
+		pager listPage
+		// cancelBeforeList cancels the context before List is called.
+		cancelBeforeList bool
+		// cancelAfter cancels the context once this many entries have been read. 0 cancels right after List returns.
+		cancelAfter int
+		// wantErr is whether an error must arrive before the channel closes. A lister that finds the channel full after
+		// cancel may drop its error, so rows where that can happen leave this false and only require the channel to close.
+		wantErr bool
+		// minEntries is the fewest entries that must arrive before the channel closes.
+		minEntries int
+	}{
+		{
+			name:             "Success: cancelling before List sends an error and closes the channel",
+			pager:            fakeListPage(createTestEntries(createTestPods(1)), "", nil),
+			cancelBeforeList: true,
+			wantErr:          true,
+		},
+		{
+			name:    "Success: cancelling while the pager is waiting sends an error and closes the channel",
+			pager:   waitingPager,
+			wantErr: true,
+		},
+		{
+			name:        "Success: cancelling partway through the entries closes the channel",
+			pager:       fakeListPage(createTestEntries(createTestPods(10)), "", nil),
+			cancelAfter: 1,
+			minEntries:  1,
+		},
+	}
+
+	for _, test := range tests {
+		r := &Relister{pagers: map[types.Retrieve][]listPage{types.RTPod: {test.pager}}}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		if test.cancelBeforeList {
+			cancel()
+		}
+		ch, err := r.List(ctx, types.RTPod)
+		if err != nil {
+			cancel()
+			t.Errorf("TestListCancel(%s): got err == %s, want err == nil", test.name, err)
+			continue
+		}
+		if test.cancelAfter == 0 {
+			cancel()
+		}
+
+		// guard fails the row instead of hanging the test if the channel never closes.
+		guard, guardCancel := context.WithTimeout(t.Context(), 5*time.Second)
+		entries := 0
+		gotErr := false
+		closed := false
+		for !closed {
+			resp, res := chans.Get(guard, ch)
+			switch {
+			case res == chans.ResultClosed:
+				closed = true
+			case !res.OK():
+				t.Errorf("TestListCancel(%s): channel did not close within 5s", test.name)
+				closed = true
+			case resp.Err != nil:
+				gotErr = true
+			default:
+				entries++
+				if entries == test.cancelAfter {
+					cancel()
+				}
+			}
+		}
+		guardCancel()
+		cancel()
+
+		if test.wantErr && !gotErr {
+			t.Errorf("TestListCancel(%s): got no error before the channel closed, want one", test.name)
+		}
+		if entries < test.minEntries {
+			t.Errorf("TestListCancel(%s): got %d entries, want at least %d", test.name, entries, test.minEntries)
+		}
+	}
+}
 
 func TestRetryableList(t *testing.T) {
 	t.Parallel()
@@ -528,12 +535,30 @@ func TestRetryableList(t *testing.T) {
 	pods := createTestPods(3)
 	entries := createTestEntries(pods)
 
+	// countingLister returns a listPage that always fails with err and a func reporting how often it was called.
+	countingLister := func(err error) (listPage, func() int) {
+		calls := 0
+		lister := func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
+			calls++
+			return nil, "", err
+		}
+		return lister, func() int { return calls }
+	}
+	gr := schema.GroupResource{Resource: "pods"}
+	forbiddenLister, forbiddenCalls := countingLister(apierrors.NewForbidden(gr, "", errors.New("rbac")))
+	timeoutLister, timeoutCalls := countingLister(apierrors.NewServerTimeout(gr, "list", 1))
+
 	tests := []struct {
 		name         string
 		lister       listPage
 		wantErr      bool
 		wantEntries  []data.Entry
 		wantContinue string
+		// cancelled cancels the context before retryableList is called.
+		cancelled bool
+		// calls, when set, reports how many times lister was called and must equal wantCalls.
+		calls     func() int
+		wantCalls int
 	}{
 		{
 			name: "Success: returns result on first try",
@@ -568,14 +593,13 @@ func TestRetryableList(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "Error: context cancelled",
+			name:      "Error: context cancelled",
+			cancelled: true,
 			lister: func(ctx context.Context, opts metav1.ListOptions) ([]data.Entry, string, error) {
-				select {
-				case <-ctx.Done():
-					return nil, "", ctx.Err()
-				default:
-					return nil, "", errors.New("should not reach here")
+				if err := ctx.Err(); err != nil {
+					return nil, "", err
 				}
+				return nil, "", errors.New("should not reach here")
 			},
 			wantErr: true,
 		},
@@ -589,11 +613,25 @@ func TestRetryableList(t *testing.T) {
 			wantEntries:  entries[:2],
 			wantContinue: "more-data",
 		},
+		{
+			name:      "Error: forbidden is permanent and not retried",
+			lister:    forbiddenLister,
+			wantErr:   true,
+			calls:     forbiddenCalls,
+			wantCalls: 1,
+		},
+		{
+			name:      "Error: server timeout is retried until max attempts",
+			lister:    timeoutLister,
+			wantErr:   true,
+			calls:     timeoutCalls,
+			wantCalls: 10,
+		},
 	}
 
 	for _, test := range tests {
 		ctx := t.Context()
-		if test.name == "Error: context cancelled" {
+		if test.cancelled {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithCancel(ctx)
 			cancel()
@@ -607,6 +645,10 @@ func TestRetryableList(t *testing.T) {
 			t.Errorf("TestRetryableList(%s): got err == nil, want err != nil", test.name)
 		case !test.wantErr && err != nil:
 			t.Errorf("TestRetryableList(%s): got err == %v, want err == nil", test.name, err)
+		}
+
+		if test.calls != nil && test.calls() != test.wantCalls {
+			t.Errorf("TestRetryableList(%s): got %d calls to the lister, want %d", test.name, test.calls(), test.wantCalls)
 		}
 
 		if !test.wantErr {
@@ -641,7 +683,7 @@ func BenchmarkRelisterList(b *testing.B) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx := b.Context()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -680,7 +722,7 @@ func BenchmarkRelisterListWithPagination(b *testing.B) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx := b.Context()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -695,6 +737,61 @@ func BenchmarkRelisterListWithPagination(b *testing.B) {
 			if response.Err != nil {
 				b.Fatalf("BenchmarkRelisterListWithPagination: unexpected error: %v", response.Err)
 			}
+		}
+	}
+}
+
+func TestSendErr(t *testing.T) {
+	t.Parallel()
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	entry := promises.Response[data.Entry]{V: createTestEntries(createTestPods(1))[0]}
+
+	tests := []struct {
+		name string
+		// full fills the channel before sendErr is called, as when the reader stopped receiving.
+		full bool
+		// wantErr is true when the value left at the front of the channel should be the error.
+		wantErr bool
+	}{
+		{
+			name:    "Success: a reader that is still receiving gets the error after ctx is done",
+			wantErr: true,
+		},
+		{
+			name: "Success: a full channel after ctx is done returns without blocking and drops the error",
+			full: true,
+		},
+	}
+
+	for _, test := range tests {
+		ch := make(chan promises.Response[data.Entry], 1)
+		if test.full {
+			ch <- entry
+		}
+
+		// Before sendErr, the lister sent the error unconditionally and blocked forever on a full channel.
+		done := make(chan struct{})
+		context.Pool(t.Context()).Submit(
+			t.Context(),
+			func() {
+				defer close(done)
+				sendErr(cancelled, ch, errors.New("list failed"))
+			},
+		)
+		guard, guardCancel := context.WithTimeout(t.Context(), 5*time.Second)
+		_, res := chans.Get(guard, done)
+		guardCancel()
+		if res != chans.ResultClosed {
+			t.Errorf("TestSendErr(%s): sendErr() did not return", test.name)
+			continue
+		}
+
+		got := <-ch
+		if (got.Err != nil) != test.wantErr {
+			t.Errorf("TestSendErr(%s): got err == %v, want err != nil == %v", test.name, got.Err, test.wantErr)
 		}
 	}
 }

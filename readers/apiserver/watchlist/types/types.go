@@ -1,6 +1,6 @@
 package types
 
-//go:generate stringer -type=Retrieve -linecomment
+//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=Retrieve -linecomment -valid -list
 
 // Retrieve is the type of data to retrieve. Uses as a bitwise flag.
 // So, like: RTNode | RTPod, or RTNode, or RTPod.

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/Azure/tattler/data"
+	"github.com/gostdlib/base/values/chans"
 	"github.com/kylelemons/godebug/pretty"
 )
 
@@ -124,7 +125,7 @@ func TestStart(t *testing.T) {
 		},
 		{
 			name: "Success",
-			b:    &Router{routes: []route{route{out: make(chan data.Entry, 1)}}},
+			b:    &Router{routes: []route{newRoute("route", make(chan data.Entry, 1))}},
 		},
 	}
 
@@ -141,11 +142,13 @@ func TestStart(t *testing.T) {
 			continue
 		}
 
-		select {
-		case <-test.b.routes[0].out:
+		if !test.b.started {
+			t.Errorf("TestStart(%s): got started == false, want started == true", test.name)
+		}
+
+		if _, ok, _ := chans.TryGet(test.b.routes[0].out); ok {
 			t.Errorf("TestStart(%s): <-test.b.routes[0].out succeeded, but should not have", test.name)
 			continue
-		default:
 		}
 
 		close(test.b.routes[0].out)
@@ -159,39 +162,46 @@ func TestPush(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		route   route
-		want    data.Entry
-		wantErr bool
+		name string
+		out  chan data.Entry
+		// priorDrops is how many entries the route had already dropped.
+		priorDrops  uint64
+		want        data.Entry
+		wantDropped uint64
 	}{
 		{
-			name:    "Error: full channel",
-			route:   route{name: "test", out: make(chan data.Entry)},
-			wantErr: true,
+			name:        "Success: a full channel drops the entry and counts it",
+			out:         make(chan data.Entry),
+			wantDropped: 1,
 		},
 		{
-			name:  "Success",
-			route: route{name: "test", out: make(chan data.Entry, 1)},
-			want:  data.Entry{},
+			name:        "Success: a drop adds to the count of earlier drops",
+			out:         make(chan data.Entry),
+			priorDrops:  3,
+			wantDropped: 4,
+		},
+		{
+			name: "Success: a channel with room gets the entry",
+			out:  make(chan data.Entry, 1),
+			want: data.Entry{},
 		},
 	}
 
 	for _, test := range tests {
 		b := &Router{}
+		r := newRoute("test", test.out)
+		r.dropped.Store(test.priorDrops)
 
-		err := b.push(t.Context(), test.route, test.want)
-		switch {
-		case err == nil && test.wantErr:
-			t.Errorf("TestPush(%s): got err == nil, want err != nil", test.name)
+		dropped := b.push(r, test.want)
+		if dropped != test.wantDropped {
+			t.Errorf("TestPush(%s): got dropped == %d, want %d", test.name, dropped, test.wantDropped)
 			continue
-		case err != nil && !test.wantErr:
-			t.Errorf("TestPush(%s): got err == %s, want err == nil", test.name, err)
-			continue
-		case err != nil:
+		}
+		if dropped != 0 {
 			continue
 		}
 
-		if diff := pretty.Compare(test.want, <-test.route.out); diff != "" {
+		if diff := pretty.Compare(test.want, <-test.out); diff != "" {
 			t.Errorf("TestPush(%s): -want/+got:\n%s", test.name, diff)
 		}
 	}

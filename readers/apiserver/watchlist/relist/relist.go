@@ -7,9 +7,12 @@ import (
 	"fmt"
 
 	"github.com/Azure/tattler/data"
+	"github.com/Azure/tattler/readers/apiserver/watchlist/internal/apierr"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
 	"github.com/gostdlib/base/retry/exponential"
+	"github.com/gostdlib/base/values/chans"
 	"github.com/gostdlib/base/values/generics/promises"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	appsv1 "k8s.io/client-go/kubernetes/typed/apps/v1"
@@ -68,8 +71,10 @@ func makePagers(clientset ClientsetInterface) map[types.Retrieve][]listPage {
 }
 
 // List will return a channel of data.Entry objects for the given resource type. It will handle pagination
-// and context cancellation. If the context is cancelled, the channel will be closed with an error on
-// the last entry. You should read all entries from the channel until it is closed.
+// and context cancellation. If listing fails, the error is sent as the last entry before the channel is closed.
+// You should read all entries from the channel until it is closed. Once the context is cancelled, a reader may
+// stop receiving without stranding the lister, but that means the error can be dropped, so check the context
+// after the channel closes rather than relying on the error.
 func (r *Relister) List(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error) {
 	listers, ok := r.pagers[rt]
 	if !ok {
@@ -84,20 +89,40 @@ func (r *Relister) List(ctx context.Context, rt types.Retrieve) (chan promises.R
 func (r *Relister) listAll(ctx context.Context, listers []listPage) chan promises.Response[data.Entry] {
 	ch := make(chan promises.Response[data.Entry], 1)
 
-	context.Pool(ctx).Submit(
+	submitted := context.Pool(ctx).Submit(
 		ctx,
 		func() {
 			defer close(ch)
 			for _, lister := range listers {
 				if err := r.listOne(ctx, lister, ch); err != nil {
-					ch <- promises.Response[data.Entry]{Err: err}
+					sendErr(ctx, ch, err)
 					return
 				}
 			}
 		},
 	)
+	// The pool declines work when ctx is already done. ch is empty and buffered, so this send cannot block.
+	if !submitted {
+		err := context.Cause(ctx)
+		if err == nil {
+			err = errors.New("worker pool declined the relist")
+		}
+		ch <- promises.Response[data.Entry]{Err: fmt.Errorf("relist could not be started: %w", err)}
+		close(ch)
+	}
 
 	return ch
+}
+
+// sendErr sends err as the last value on ch. It tries without blocking first, so a reader that is still receiving
+// gets the error even after ctx is done, and then gives up once ctx is done, so a reader that stopped receiving
+// cannot leave the lister blocked forever.
+func sendErr(ctx context.Context, ch chan promises.Response[data.Entry], err error) {
+	resp := promises.Response[data.Entry]{Err: err}
+	if chans.TryPut(ch, resp) {
+		return
+	}
+	chans.Put(ctx, ch, resp)
 }
 
 // listOne lists all entries from a single lister and sends them to the channel.
@@ -112,10 +137,8 @@ func (r *Relister) listOne(ctx context.Context, lister listPage, ch chan promise
 		}
 
 		for _, entry := range list {
-			select {
-			case <-ctx.Done():
+			if !chans.Put(ctx, ch, promises.Response[data.Entry]{V: entry}) {
 				return context.Cause(ctx)
-			case ch <- promises.Response[data.Entry]{V: entry}:
 			}
 		}
 
@@ -129,7 +152,9 @@ func (r *Relister) listOne(ctx context.Context, lister listPage, ch chan promise
 
 var back = exponential.Must(exponential.New())
 
-// retryableList wraps a listPage with exponential backoff using existing package boff.
+// retryableList wraps a listPage with exponential backoff using existing package boff. APIServer errors that cannot
+// succeed on retry (forbidden, unauthorized, not found, invalid) are returned wrapped in exponential.ErrPermanent so
+// that neither this loop nor the caller's retries them.
 func retryableList(ctx context.Context, lister listPage, options metav1.ListOptions) ([]data.Entry, string, error) {
 	var result []data.Entry
 	var cont string
@@ -139,7 +164,7 @@ func retryableList(ctx context.Context, lister listPage, options metav1.ListOpti
 		func(ctx context.Context, rec exponential.Record) error {
 			var retryErr error
 			result, cont, retryErr = lister(ctx, options)
-			return retryErr // Let exponential backoff handle the retry logic
+			return apierr.Permanent(retryErr)
 		},
 		exponential.WithMaxAttempts(10),
 	)

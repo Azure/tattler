@@ -4,9 +4,9 @@
 package data
 
 import (
-	"errors"
 	"fmt"
 
+	"github.com/gostdlib/base/errors"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -21,7 +21,7 @@ var (
 	ErrInvalidType = errors.New("invalid type")
 )
 
-//go:generate stringer -type=SourceType -linecomment
+//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=SourceType -linecomment -valid -invalid=0
 
 type SourceType uint8
 
@@ -33,7 +33,7 @@ const (
 	STEtcd      SourceType = 3 // Etcd
 )
 
-//go:generate stringer -type=ObjectType -linecomment
+//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=ObjectType -linecomment -valid -invalid=0
 
 // ObjectType is the type of the object held in a type.
 type ObjectType uint8
@@ -67,7 +67,7 @@ const (
 	OTEndpoint ObjectType = 12 // Endpoint
 )
 
-//go:generate stringer -type=ChangeType -linecomment
+//go:generate go tool github.com/gostdlib/base/values/generators/stringer -type=ChangeType -linecomment -valid -invalid=0
 
 // ChangeType is the type of change.
 type ChangeType uint8
@@ -114,74 +114,43 @@ type Entry struct {
 	objectType ObjectType
 }
 
-// NewEntry creates a new Entry. The underlying object must be a corev1.Node, corev1.Pod,
-// corev1.PersistentVolume or corev1.Namespace.
+// NewEntry creates a new Entry. The underlying object must be one of the Kubernetes types that has an ObjectType,
+// otherwise ErrInvalidType is returned.
 func NewEntry(obj runtime.Object, st SourceType, ct ChangeType) (Entry, error) {
-	switch v := any(obj).(type) {
+	switch v := obj.(type) {
 	case *corev1.Node:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTNode, st, ct)
 	case *corev1.Pod:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTPod, st, ct)
 	case *corev1.Namespace:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTNamespace, st, ct)
 	case *corev1.PersistentVolume:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTPersistentVolume, st, ct)
 	case *rbacv1.ClusterRole:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTClusterRole, st, ct)
 	case *rbacv1.ClusterRoleBinding:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTClusterRoleBinding, st, ct)
 	case *rbacv1.Role:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTRole, st, ct)
 	case *rbacv1.RoleBinding:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTRoleBinding, st, ct)
 	case *corev1.Service:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTService, st, ct)
 	case *appsv1.Deployment:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTDeployment, st, ct)
 	case *networkingv1.Ingress:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTIngressController, st, ct)
 	case *corev1.Endpoints:
-		return newEntry(v, st, ct)
+		return newEntry(v, OTEndpoint, st, ct)
 	}
 	return Entry{}, ErrInvalidType
 }
 
-// newEntry creates a new Entry.
-func newEntry[O ingestObj](obj O, st SourceType, ct ChangeType) (Entry, error) {
+// newEntry creates a new Entry for obj, whose ObjectType is ot.
+func newEntry[O ingestObj](obj O, ot ObjectType, st SourceType, ct ChangeType) (Entry, error) {
 	if obj == nil {
 		return Entry{}, fmt.Errorf("new object is nil")
 	}
-
-	var ot ObjectType
-	switch v := any(obj).(type) {
-	case *corev1.Node:
-		ot = OTNode
-	case *corev1.Pod:
-		ot = OTPod
-	case *corev1.Namespace:
-		ot = OTNamespace
-	case *corev1.PersistentVolume:
-		ot = OTPersistentVolume
-	case *rbacv1.ClusterRole:
-		ot = OTClusterRole
-	case *rbacv1.ClusterRoleBinding:
-		ot = OTClusterRoleBinding
-	case *rbacv1.Role:
-		ot = OTRole
-	case *rbacv1.RoleBinding:
-		ot = OTRoleBinding
-	case *corev1.Service:
-		ot = OTService
-	case *appsv1.Deployment:
-		ot = OTDeployment
-	case *networkingv1.Ingress:
-		ot = OTIngressController
-	case *corev1.Endpoints:
-		ot = OTEndpoint
-	default:
-		return Entry{}, fmt.Errorf("unknown object type(%T)", v)
-	}
-
 	return Entry{
 		data:       obj,
 		uid:        obj.GetUID(),

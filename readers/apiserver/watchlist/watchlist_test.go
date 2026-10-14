@@ -1,7 +1,6 @@
 package watchlist
 
 import (
-	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,7 +13,9 @@ import (
 	"github.com/Azure/tattler/readers/apiserver/watchlist/relist"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
 	"github.com/gostdlib/base/retry/exponential"
+	"github.com/gostdlib/base/values/chans"
 	"github.com/gostdlib/base/values/generics/promises"
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +30,7 @@ import (
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 )
 
@@ -120,6 +122,12 @@ func TestNew(t *testing.T) {
 			wantErr:       true,
 		},
 		{
+			name:          "Error: a known retrieve type combined with an unknown bit",
+			clientset:     clientset,
+			retrieveTypes: types.RTPod | types.Retrieve(1<<20),
+			wantErr:       true,
+		},
+		{
 			name:          "Error: relist duration too short",
 			clientset:     clientset,
 			retrieveTypes: types.RTPod,
@@ -140,7 +148,7 @@ func TestNew(t *testing.T) {
 		if test.clientset != nil {
 			clientsetInterface = test.clientset
 		}
-		reader, err := New(context.Background(), clientsetInterface, test.retrieveTypes, test.opts...)
+		reader, err := New(t.Context(), clientsetInterface, test.retrieveTypes, test.opts...)
 
 		switch {
 		case test.wantErr && err == nil:
@@ -179,7 +187,9 @@ func TestClose(t *testing.T) {
 	tests := []struct {
 		name    string
 		started bool
-		wantErr bool
+		// watcherErr is returned by a watcher running when Close is called.
+		watcherErr error
+		wantErr    bool
 	}{
 		{
 			name:    "Success: close after start",
@@ -190,6 +200,12 @@ func TestClose(t *testing.T) {
 			name:    "Error: close before start",
 			started: false,
 			wantErr: true,
+		},
+		{
+			name:       "Error: a watcher stopped with an error",
+			started:    true,
+			watcherErr: errors.New("watcher failed"),
+			wantErr:    true,
 		},
 	}
 
@@ -204,12 +220,13 @@ func TestClose(t *testing.T) {
 		}
 
 		if test.started {
-			_, cancel := context.WithCancel(context.Background())
+			_, cancel := context.WithCancel(t.Context())
 			r.cancelWatches = cancel
 			defer cancel()
 		}
+		r.waitWatchers.Go(t.Context(), func(context.Context) error { return test.watcherErr })
 
-		err := r.Close(context.Background())
+		err := r.Close(t.Context())
 
 		switch {
 		case test.wantErr && err == nil:
@@ -224,14 +241,10 @@ func TestClose(t *testing.T) {
 		if !didCancel {
 			t.Errorf("TestClose(%s): cancel was not called", test.name)
 		}
-		select {
-		case <-r.closeCh:
-		default:
+		if _, _, closed := chans.TryGet(r.closeCh); !closed {
 			t.Errorf("TestClose(%s): closeCh was not closed", test.name)
 		}
-		select {
-		case <-r.spawnCh:
-		default:
+		if _, _, closed := chans.TryGet(r.spawnCh); !closed {
 			t.Errorf("TestClose(%s): spawnCh was not closed", test.name)
 		}
 	}
@@ -266,7 +279,7 @@ func TestSetOut(t *testing.T) {
 			started: test.started,
 		}
 
-		err := r.SetOut(context.Background(), test.out)
+		err := r.SetOut(t.Context(), test.out)
 
 		switch {
 		case test.wantErr && err == nil:
@@ -344,7 +357,7 @@ func TestRun(t *testing.T) {
 			wantErr:       true,
 		},
 		{
-			name:      "Namespace success",
+			name:      "Success: starts the namespace watcher",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNamespace,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
@@ -354,7 +367,7 @@ func TestRun(t *testing.T) {
 			wantRetrieves: []types.Retrieve{types.RTNamespace},
 		},
 		{
-			name:      "PersistentVolume success",
+			name:      "Success: starts the persistent volume watcher",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTPersistentVolume,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
@@ -364,7 +377,7 @@ func TestRun(t *testing.T) {
 			wantRetrieves: []types.Retrieve{types.RTPersistentVolume},
 		},
 		{
-			name:      "Node success",
+			name:      "Success: starts the node watcher",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTNode,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
@@ -374,7 +387,7 @@ func TestRun(t *testing.T) {
 			wantRetrieves: []types.Retrieve{types.RTNode},
 		},
 		{
-			name:      "Pod success",
+			name:      "Success: starts the pod watcher",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTPod,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
@@ -384,7 +397,7 @@ func TestRun(t *testing.T) {
 			wantRetrieves: []types.Retrieve{types.RTPod},
 		},
 		{
-			name:      "RBAC success",
+			name:      "Success: starts the RBAC watcher",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTRBAC,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
@@ -394,7 +407,7 @@ func TestRun(t *testing.T) {
 			wantRetrieves: []types.Retrieve{types.RTRBAC},
 		},
 		{
-			name:      "Services success",
+			name:      "Success: starts the service watcher",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTService,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
@@ -404,7 +417,7 @@ func TestRun(t *testing.T) {
 			wantRetrieves: []types.Retrieve{types.RTService},
 		},
 		{
-			name:      "Deployments success",
+			name:      "Success: starts the deployment watcher",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTDeployment,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
@@ -414,7 +427,7 @@ func TestRun(t *testing.T) {
 			wantRetrieves: []types.Retrieve{types.RTDeployment},
 		},
 		{
-			name:      "Ingress Controller success",
+			name:      "Success: starts the ingress watcher",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTIngressController,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
@@ -424,7 +437,7 @@ func TestRun(t *testing.T) {
 			wantRetrieves: []types.Retrieve{types.RTIngressController},
 		},
 		{
-			name:      "Endpoint success",
+			name:      "Success: starts the endpoint watcher",
 			ch:        make(chan data.Entry, 1),
 			retrieves: types.RTEndpoint,
 			fakeWatch: func(ctx context.Context, rt types.Retrieve, spanWatchers []watchSpec) error {
@@ -434,7 +447,7 @@ func TestRun(t *testing.T) {
 			wantRetrieves: []types.Retrieve{types.RTEndpoint},
 		},
 		{
-			name: "All success",
+			name: "Success: starts every watcher",
 			ch:   make(chan data.Entry, 1),
 			retrieves: (types.RTNamespace | types.RTPersistentVolume | types.RTNode | types.RTPod | types.RTRBAC | types.RTService | types.RTDeployment |
 				types.RTIngressController | types.RTEndpoint),
@@ -475,7 +488,7 @@ func TestRun(t *testing.T) {
 			closeCh:       make(chan struct{}),
 		}
 
-		err = r.Run(context.Background())
+		err = r.Run(t.Context())
 		switch {
 		case test.wantErr && err == nil:
 			t.Errorf("TestRun(%s): got err == nil, want err != nil", test.name)
@@ -496,6 +509,73 @@ func TestRun(t *testing.T) {
 	}
 }
 
+func TestRunFailureStopsStartedWatchers(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	// RBAC starts roles, rolebindings, clusterroles and clusterrolebindings in that order. The first clusterroles watch
+	// is forbidden, so Run fails after the roles and rolebindings watchers are already running. Reactors are only
+	// called from connectWatcher, one at a time, so the counter needs no lock.
+	var started []*watch.FakeWatcher
+	clusterRoleCalls := 0
+	clientset := fake.NewSimpleClientset()
+	clientset.PrependWatchReactor("*", func(action k8stesting.Action) (bool, watch.Interface, error) {
+		if action.GetResource().Resource == "clusterroles" {
+			clusterRoleCalls++
+			if clusterRoleCalls == 1 {
+				return true, nil, apierrors.NewForbidden(action.GetResource().GroupResource(), "", errors.New("rbac"))
+			}
+		}
+		w := watch.NewFake()
+		started = append(started, w)
+		return true, w, nil
+	})
+
+	r := &Reader{
+		clientset:         clientset,
+		retrieveTypes:     types.RTRBAC,
+		relistInterval:    -1,
+		cancel:            func() {},
+		closeCh:           make(chan struct{}),
+		spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
+		watcherSpawnDelay: 1 * time.Millisecond,
+		dataCh:            make(chan data.Entry, 1),
+	}
+	context.Pool(ctx).Submit(ctx, func() { r.connectWatcher(ctx, r.spawnCh) })
+
+	if err := r.Run(ctx); err == nil {
+		t.Fatalf("TestRunFailureStopsStartedWatchers: first Run() got err == nil, want err != nil")
+	}
+	if len(started) != 2 {
+		t.Fatalf("TestRunFailureStopsStartedWatchers: got %d watchers started before the failure, want 2", len(started))
+	}
+	// Run waits for the watchers it started to exit before returning its error, so they must already be stopped. This
+	// is fatal because Close() below would wait forever on watchers that were left running.
+	for i, w := range started {
+		if !w.IsStopped() {
+			t.Fatalf("TestRunFailureStopsStartedWatchers: watcher %d is still running after Run() failed", i)
+		}
+	}
+
+	// The failed Run must leave the Reader able to run again.
+	if err := r.Run(ctx); err != nil {
+		t.Fatalf("TestRunFailureStopsStartedWatchers: second Run() got err == %s, want err == nil", err)
+	}
+	if len(started) != 6 {
+		t.Fatalf("TestRunFailureStopsStartedWatchers: got %d watchers started in total, want 6", len(started))
+	}
+	if err := r.Close(ctx); err != nil {
+		t.Fatalf("TestRunFailureStopsStartedWatchers: Close() got err == %s, want err == nil", err)
+	}
+	for i, w := range started {
+		if !w.IsStopped() {
+			t.Errorf("TestRunFailureStopsStartedWatchers: watcher %d is still running after Close()", i)
+		}
+	}
+}
+
 type watcherWithOnlyStop struct {
 	watch.Interface
 }
@@ -507,10 +587,10 @@ func (w watcherWithOnlyStop) Stop() {}
 func TestWatch(t *testing.T) {
 	t.Parallel()
 
-	doneCtx, cancel := context.WithCancel(context.Background())
+	doneCtx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	eventWatcherCount := 0
@@ -523,11 +603,11 @@ func TestWatch(t *testing.T) {
 		wantErr      bool
 	}{
 		{
-			name: "Context done",
+			name: "Success: a done context returns without starting watchers",
 			ctx:  doneCtx,
 		},
 		{
-			name: "Watching had connection error and we haven't connected before",
+			name: "Error: the first watcher cannot connect",
 			ctx:  ctx,
 			spanWatchers: []watchSpec{
 				{spawn: func(options metav1.ListOptions) (watch.Interface, error) {
@@ -537,7 +617,7 @@ func TestWatch(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "Watching had connection error but we have connected before",
+			name: "Success: a watcher that connected before reconnects after an error",
 			ctx:  ctx,
 			spanWatchers: []watchSpec{
 				{spawn: func(options metav1.ListOptions) (watch.Interface, error) {
@@ -566,15 +646,12 @@ func TestWatch(t *testing.T) {
 		var ctx context.Context
 		if test.ctx.Err() == nil {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithCancel(context.Background())
+			ctx, cancel = context.WithCancel(t.Context())
 
 			// Start the connectWatcher goroutine to process spawn requests
-			go r.connectWatcher(ctx, r.spawnCh)
+			context.Pool(t.Context()).Submit(t.Context(), func() { r.connectWatcher(ctx, r.spawnCh) })
 
-			go func() {
-				time.Sleep(100 * time.Millisecond)
-				cancel()
-			}()
+			time.AfterFunc(100*time.Millisecond, cancel)
 		} else {
 			ctx = test.ctx
 		}
@@ -601,20 +678,20 @@ func TestCreateWatcherBookmarkKeys(t *testing.T) {
 		create  func(*Reader, context.Context) []watchSpec
 		wantKey []string
 	}{
-		{name: "namespace", create: (*Reader).createNamespaceWatcher, wantKey: []string{"core.v1.namespaces"}},
-		{name: "node", create: (*Reader).createNodesWatcher, wantKey: []string{"core.v1.nodes"}},
-		{name: "pod", create: (*Reader).createPodsWatcher, wantKey: []string{"core.v1.pods"}},
-		{name: "persistent volume", create: (*Reader).createPersistentVolumesWatcher, wantKey: []string{"core.v1.persistentvolumes"}},
-		{name: "rbac", create: (*Reader).createRBACWatcher, wantKey: []string{
+		{name: "Success: namespace", create: (*Reader).createNamespaceWatcher, wantKey: []string{"core.v1.namespaces"}},
+		{name: "Success: node", create: (*Reader).createNodesWatcher, wantKey: []string{"core.v1.nodes"}},
+		{name: "Success: pod", create: (*Reader).createPodsWatcher, wantKey: []string{"core.v1.pods"}},
+		{name: "Success: persistent volume", create: (*Reader).createPersistentVolumesWatcher, wantKey: []string{"core.v1.persistentvolumes"}},
+		{name: "Success: rbac", create: (*Reader).createRBACWatcher, wantKey: []string{
 			"rbac.authorization.k8s.io.v1.roles",
 			"rbac.authorization.k8s.io.v1.rolebindings",
 			"rbac.authorization.k8s.io.v1.clusterroles",
 			"rbac.authorization.k8s.io.v1.clusterrolebindings",
 		}},
-		{name: "service", create: (*Reader).createServicesWatcher, wantKey: []string{"core.v1.services"}},
-		{name: "deployment", create: (*Reader).createDeploymentsWatcher, wantKey: []string{"apps.v1.deployments"}},
-		{name: "ingress", create: (*Reader).createIngressesWatcher, wantKey: []string{"networking.k8s.io.v1.ingresses"}},
-		{name: "endpoint", create: (*Reader).createEndpointsWatcher, wantKey: []string{"core.v1.endpoints"}},
+		{name: "Success: service", create: (*Reader).createServicesWatcher, wantKey: []string{"core.v1.services"}},
+		{name: "Success: deployment", create: (*Reader).createDeploymentsWatcher, wantKey: []string{"apps.v1.deployments"}},
+		{name: "Success: ingress", create: (*Reader).createIngressesWatcher, wantKey: []string{"networking.k8s.io.v1.ingresses"}},
+		{name: "Success: endpoint", create: (*Reader).createEndpointsWatcher, wantKey: []string{"core.v1.endpoints"}},
 	}
 
 	for _, test := range tests {
@@ -633,17 +710,21 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name               string
-		storedRV           string
-		loadErr            error
-		watchErr           error
-		replacementRV      string
-		replacementErr     error
-		replacementLoadErr error
-		deleteErr          error
-		wantRVs            []string
-		wantDelete         bool
-		wantErr            bool
+		name          string
+		storedRV      string
+		loadErr       error
+		watchErr      error
+		replacementRV string
+		deleteErr     error
+		// noWatchList makes the server reject WatchList options, as one without the WatchList feature gate does.
+		noWatchList bool
+		wantRVs     []string
+		wantDelete  bool
+		wantErr     bool
+		// wantRelist is set when a rejected bookmark must be recovered with a snapshot relist. The last watch must
+		// then be created with wantRecoverySendInitialEvents.
+		wantRelist                    bool
+		wantRecoverySendInitialEvents *bool
 	}{
 		{
 			name:     "Success: uses stored bookmark on startup",
@@ -651,34 +732,42 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 			wantRVs:  []string{"500"},
 		},
 		{
-			name:       "Success: clears expired bookmark after startup failure",
-			storedRV:   "500",
-			watchErr:   apierrors.NewResourceExpired("the resourceVersion is too old"),
-			wantRVs:    []string{"500", ""},
-			wantDelete: true,
+			name:                          "Success: clears expired bookmark, watches from now and relists",
+			storedRV:                      "500",
+			watchErr:                      apierrors.NewResourceExpired("the resourceVersion is too old"),
+			wantRVs:                       []string{"500", ""},
+			wantDelete:                    true,
+			wantRelist:                    true,
+			wantRecoverySendInitialEvents: ptr.To(false),
 		},
 		{
-			name:       "Success: clears malformed bookmark after startup failure",
-			storedRV:   "malformed",
-			watchErr:   apierrors.NewBadRequest("invalid resourceVersion"),
-			wantRVs:    []string{"malformed", ""},
-			wantDelete: true,
+			name:                          "Success: clears malformed bookmark, watches from now and relists",
+			storedRV:                      "malformed",
+			watchErr:                      apierrors.NewBadRequest("invalid resourceVersion"),
+			wantRVs:                       []string{"malformed", ""},
+			wantDelete:                    true,
+			wantRelist:                    true,
+			wantRecoverySendInitialEvents: ptr.To(false),
 		},
 		{
-			name:          "Success: preserves replacement bookmark after startup failure",
-			storedRV:      "100",
-			watchErr:      apierrors.NewResourceExpired("the resourceVersion is too old"),
-			replacementRV: "500",
-			wantRVs:       []string{"100", "500"},
+			name:                          "Success: leaves another reader's replacement bookmark in place and relists instead of resuming from it",
+			storedRV:                      "100",
+			watchErr:                      apierrors.NewResourceExpired("the resourceVersion is too old"),
+			replacementRV:                 "500",
+			wantRVs:                       []string{"100", ""},
+			wantRelist:                    true,
+			wantRecoverySendInitialEvents: ptr.To(false),
 		},
 		{
-			name:           "Success: clears stale replacement bookmark after startup failure",
-			storedRV:       "100",
-			watchErr:       apierrors.NewResourceExpired("the resourceVersion is too old"),
-			replacementRV:  "500",
-			replacementErr: apierrors.NewResourceExpired("the replacement resourceVersion is too old"),
-			wantRVs:        []string{"100", "500", ""},
-			wantDelete:     true,
+			name:        "Success: without WatchList support an expired bookmark replays existing objects and relists",
+			storedRV:    "500",
+			watchErr:    apierrors.NewResourceExpired("the resourceVersion is too old"),
+			noWatchList: true,
+			// The first spawn is rejected for its WatchList options and retried as a standard watch.
+			wantRVs:                       []string{"500", "500", ""},
+			wantDelete:                    true,
+			wantRelist:                    true,
+			wantRecoverySendInitialEvents: nil,
 		},
 		{
 			name:     "Error: preserves bookmark after transient startup failure",
@@ -696,15 +785,6 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 			wantErr:   true,
 		},
 		{
-			name:               "Error: returns replacement bookmark load failure",
-			storedRV:           "100",
-			watchErr:           apierrors.NewResourceExpired("the resourceVersion is too old"),
-			replacementRV:      "500",
-			replacementLoadErr: errors.New("bookmark ConfigMap read failed"),
-			wantRVs:            []string{"100"},
-			wantErr:            true,
-		},
-		{
 			name:    "Success: ignores bookmark load error",
 			loadErr: errors.New("bookmark ConfigMap not found"),
 			wantRVs: []string{""},
@@ -713,6 +793,8 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 
@@ -721,31 +803,33 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 			store.SetLoadError(test.loadErr)
 			store.SetDeleteError(test.deleteErr)
 			capturedOptions := []metav1.ListOptions{}
+			relisted := make(chan types.Retrieve, 1)
 
 			r := &Reader{
 				spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 				watcherSpawnDelay: 1 * time.Millisecond,
 				bookmarking:       true,
 				bookmarkStore:     store,
+				relister:          newRecordingRelister(relisted),
+				dataCh:            make(chan data.Entry, 1),
 				fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
 					<-ctx.Done()
 					return "", nil
 				},
 			}
 
-			go r.connectWatcher(ctx, r.spawnCh)
+			context.Pool(t.Context()).Submit(t.Context(), func() { r.connectWatcher(ctx, r.spawnCh) })
 
 			sp := func(options metav1.ListOptions) (watch.Interface, error) {
 				capturedOptions = append(capturedOptions, options)
-				if test.replacementErr != nil && options.ResourceVersion == test.replacementRV {
-					return nil, test.replacementErr
+				if test.noWatchList && options.SendInitialEvents != nil {
+					return nil, watchListGateError()
 				}
 				if test.watchErr != nil && options.ResourceVersion == test.storedRV {
 					if test.replacementRV != "" {
 						if err := store.Store(ctx, key, test.replacementRV); err != nil {
 							t.Fatalf("Store() got err %v, want nil", err)
 						}
-						store.SetLoadError(test.replacementLoadErr)
 					}
 					return nil, test.watchErr
 				}
@@ -759,7 +843,24 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 			if !test.wantErr && err != nil {
 				t.Fatalf("watch returned error: %v", err)
 			}
+
+			// The relist runs after watch() returns, so wait for it before cancelling.
+			if test.wantRelist {
+				waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+				rt, res := chans.Get(waitCtx, relisted)
+				waitCancel()
+				switch {
+				case res != chans.ResultOK:
+					t.Errorf("got no relist, want a relist of %v", types.RTNamespace)
+				case rt != types.RTNamespace:
+					t.Errorf("got relist of %v, want %v", rt, types.RTNamespace)
+				}
+			}
 			cancel()
+			_ = r.waitWatchers.Wait(t.Context())
+			if _, ok, _ := chans.TryGet(relisted); ok && !test.wantRelist {
+				t.Errorf("got a relist, want none")
+			}
 
 			if len(capturedOptions) != len(test.wantRVs) {
 				t.Fatalf("got %d spawn calls, want %d", len(capturedOptions), len(test.wantRVs))
@@ -769,11 +870,43 @@ func TestWatchBookmarkStoreStartup(t *testing.T) {
 					t.Errorf("spawn %d got ResourceVersion == %q, want %q", i, capturedOptions[i].ResourceVersion, wantRV)
 				}
 			}
-			if gotDelete := len(store.Deletes()) > 0; gotDelete != test.wantDelete {
+			if test.wantRelist {
+				last := capturedOptions[len(capturedOptions)-1]
+				if diff := pretty.Compare(test.wantRecoverySendInitialEvents, last.SendInitialEvents); diff != "" {
+					t.Errorf("recovery watch SendInitialEvents: -want/+got:\n%s", diff)
+				}
+			}
+			if gotDelete := store.Deletes().Len() > 0; gotDelete != test.wantDelete {
 				t.Errorf("got bookmark delete == %v, want %v", gotDelete, test.wantDelete)
+			}
+			if test.replacementRV != "" {
+				if got := store.Stored(key); got != test.replacementRV {
+					t.Errorf("got stored bookmark %q, want the replacement %q left in place", got, test.replacementRV)
+				}
 			}
 		})
 	}
+}
+
+// newRecordingRelister returns a relister whose List reports each relisted type on relisted and lists nothing.
+func newRecordingRelister(relisted chan types.Retrieve) *fakeRelister {
+	return &fakeRelister{
+		listFunc: func(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error) {
+			chans.TryPut(relisted, rt)
+			ch := make(chan promises.Response[data.Entry])
+			close(ch)
+			return ch, nil
+		},
+	}
+}
+
+// watchListGateError is the error a server without the WatchList feature gate returns for WatchList options.
+func watchListGateError() error {
+	return apierrors.NewInvalid(
+		schema.GroupKind{Group: "meta.k8s.io", Kind: "ListOptions"},
+		"",
+		field.ErrorList{field.Forbidden(field.NewPath("sendInitialEvents"), "sendInitialEvents is forbidden for watch unless the WatchList feature gate is enabled")},
+	)
 }
 
 func TestWatchBookmarkInvalidWatchListOptionsFallback(t *testing.T) {
@@ -793,7 +926,7 @@ func TestWatchBookmarkInvalidWatchListOptionsFallback(t *testing.T) {
 		},
 	}
 
-	go r.connectWatcher(ctx, r.spawnCh)
+	context.Pool(t.Context()).Submit(t.Context(), func() { r.connectWatcher(ctx, r.spawnCh) })
 
 	sp := func(options metav1.ListOptions) (watch.Interface, error) {
 		capturedOptions = append(capturedOptions, options)
@@ -830,14 +963,21 @@ func TestWatchEventsStoresBookmarks(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
+		name string
+		// bookmarks is how many bookmark events with the same resourceVersion the watcher sends.
+		bookmarks  int
 		storeErr   error
 		wantStored string
 		wantCalls  int
 	}{
-		{name: "stores bookmark", wantStored: "700", wantCalls: 1},
-		{name: "skips duplicate bookmark", wantStored: "700", wantCalls: 1},
-		{name: "retries duplicate after store error", storeErr: errors.New("bookmark ConfigMap update failed"), wantCalls: 2},
+		{name: "Success: stores a bookmark", bookmarks: 1, wantStored: "700", wantCalls: 1},
+		{name: "Success: skips storing a duplicate bookmark", bookmarks: 2, wantStored: "700", wantCalls: 1},
+		{
+			name:      "Success: retries storing a duplicate bookmark after a store error",
+			bookmarks: 2,
+			storeErr:  errors.New("bookmark ConfigMap update failed"),
+			wantCalls: 2,
+		},
 	}
 
 	for _, test := range tests {
@@ -847,9 +987,8 @@ func TestWatchEventsStoresBookmarks(t *testing.T) {
 			store := storefake.New(map[schema.GroupVersionResource]string{})
 			store.SetStoreError(test.storeErr)
 			r := &Reader{bookmarkStore: store}
-			watcher := watch.NewFakeWithChanSize(2, false)
-			watcher.Action(watch.Bookmark, &fakeObject{rv: "700"})
-			if test.name != "stores bookmark" {
+			watcher := watch.NewFakeWithChanSize(test.bookmarks, false)
+			for i := 0; i < test.bookmarks; i++ {
 				watcher.Action(watch.Bookmark, &fakeObject{rv: "700"})
 			}
 			watcher.Stop()
@@ -864,7 +1003,7 @@ func TestWatchEventsStoresBookmarks(t *testing.T) {
 			if got := store.Stored(namespaceGVR); got != test.wantStored {
 				t.Fatalf("stored bookmark got %q, want %q", got, test.wantStored)
 			}
-			if got := len(store.StoreCalls()); got != test.wantCalls {
+			if got := store.StoreCalls().Len(); got != test.wantCalls {
 				t.Fatalf("Store() got %d calls, want %d", got, test.wantCalls)
 			}
 		})
@@ -880,11 +1019,16 @@ func TestWatchEvent(t *testing.T) {
 		}
 	}
 
-	doneCtx, cancel := context.WithCancel(context.Background())
+	doneCtx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	closedIn := make(chan watch.Event)
 	close(closedIn)
+
+	// stalledCtx is cancelled while watchEvent is blocked sending to a full output channel, which is what Close() does
+	// to a watcher whose consumer has stalled.
+	stalledCtx, stalledCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer stalledCancel()
 
 	tests := []struct {
 		name        string
@@ -895,23 +1039,26 @@ func TestWatchEvent(t *testing.T) {
 		wantEntry   data.Entry
 		wantErr     bool
 		wantStopper bool
+		// fullOut makes the output channel full before watchEvent is called, so sending an entry blocks.
+		fullOut bool
 	}{
 		{
-			name:        "Context done",
+			name:        "Error: a done context stops the watcher",
 			ctx:         doneCtx,
+			ch:          make(chan watch.Event),
 			wantErr:     true,
 			wantStopper: true,
 		},
 		{
-			name:        "Input Channel closed",
-			ctx:         context.Background(),
+			name:        "Error: the input channel is closed",
+			ctx:         t.Context(),
 			ch:          closedIn,
 			wantErr:     true,
 			wantStopper: true,
 		},
 		{
-			name: "Bookmark event",
-			ctx:  context.Background(),
+			name: "Success: a bookmark event returns its resourceVersion",
+			ctx:  t.Context(),
 			ch:   make(chan watch.Event, 1),
 			event: watch.Event{
 				Type: watch.Bookmark,
@@ -922,8 +1069,8 @@ func TestWatchEvent(t *testing.T) {
 			wantRV: "1",
 		},
 		{
-			name: "Event sent to cache",
-			ctx:  context.Background(),
+			name: "Success: an event is sent to the output channel",
+			ctx:  t.Context(),
 			ch:   make(chan watch.Event, 1),
 			event: watch.Event{
 				Type:   watch.Added,
@@ -931,10 +1078,30 @@ func TestWatchEvent(t *testing.T) {
 			},
 			wantEntry: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTAdd),
 		},
+		{
+			name: "Error: context cancelled while the output channel is full stops the watcher",
+			ctx:  stalledCtx,
+			ch:   make(chan watch.Event, 1),
+			event: watch.Event{
+				Type:   watch.Added,
+				Object: &corev1.Pod{},
+			},
+			fullOut:     true,
+			wantErr:     true,
+			wantStopper: true,
+		},
+	}
+
+	type result struct {
+		rv  string
+		err error
 	}
 
 	for _, test := range tests {
 		r := &Reader{dataCh: make(chan data.Entry, 1)}
+		if test.fullOut {
+			r.dataCh <- data.Entry{}
+		}
 		if test.event != (watch.Event{}) {
 			test.ch <- test.event
 		}
@@ -942,7 +1109,23 @@ func TestWatchEvent(t *testing.T) {
 		stopped := false
 		stopper := newStopper(&stopped)
 
-		gotRv, err := r.watchEvent(test.ctx, test.ch, stopper)
+		// watchEvent runs on the pool so that a watchEvent that never returns fails this test instead of hanging it.
+		done := make(chan result, 1)
+		context.Pool(t.Context()).Submit(
+			t.Context(),
+			func() {
+				rv, err := r.watchEvent(test.ctx, test.ch, stopper)
+				done <- result{rv: rv, err: err}
+			},
+		)
+		guardCtx, guardCancel := context.WithTimeout(t.Context(), 5*time.Second)
+		res, got := chans.Get(guardCtx, done)
+		guardCancel()
+		if got != chans.ResultOK {
+			t.Errorf("TestWatchEvent(%s): watchEvent did not return within 5s", test.name)
+			continue
+		}
+		gotRv, err := res.rv, res.err
 		switch {
 		case test.wantErr && err == nil:
 			t.Errorf("TestWatchEvent(%s): got err == nil, want err != nil", test.name)
@@ -979,12 +1162,12 @@ func TestRelistTask(t *testing.T) {
 		wantCalled     bool
 	}{
 		{
-			name:           "relist disabled",
+			name:           "Success: relist disabled",
 			relistInterval: -1,
 			wantCalled:     true, // testHandleClientSwitch is always called for testing
 		},
 		{
-			name:           "relist enabled",
+			name:           "Success: relist enabled",
 			relistInterval: 1 * time.Hour,
 			wantCalled:     true,
 		},
@@ -999,7 +1182,7 @@ func TestRelistTask(t *testing.T) {
 			},
 		}
 
-		r.relistTask(context.Background())
+		r.relistTask(t.Context())
 
 		if handleClientSwitchCalled != test.wantCalled {
 			t.Errorf("TestRelistTask(%s): handleClientSwitch called = %v, want %v", test.name, handleClientSwitchCalled, test.wantCalled)
@@ -1011,208 +1194,126 @@ func TestRelistTask(t *testing.T) {
 func TestPerformRelist(t *testing.T) {
 	t.Parallel()
 
-	// Create a fake clientset with some pods
-	pod1 := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-pod-1",
-			Namespace: "default",
-			UID:       k8stypes.UID("uid-1"),
-		},
+	newPod := func(uid string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: uid, Namespace: "default", UID: k8stypes.UID(uid)}}
 	}
-	pod2 := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-pod-2",
-			Namespace: "default",
-			UID:       k8stypes.UID("uid-2"),
-		},
+	clientset := fake.NewSimpleClientset(newPod("uid-1"), newPod("uid-2"))
+	newRelister := func() lister {
+		r, err := relist.New(clientset)
+		if err != nil {
+			t.Fatalf("TestPerformRelist: relist.New() got err == %s, want err == nil", err)
+		}
+		return r
 	}
 
-	clientset := fake.NewSimpleClientset(pod1, pod2)
+	// respond returns a closed channel holding resps, which is how relist.Relister ends a list.
+	respond := func(resps ...promises.Response[data.Entry]) chan promises.Response[data.Entry] {
+		ch := make(chan promises.Response[data.Entry], len(resps))
+		for _, resp := range resps {
+			ch <- resp
+		}
+		close(ch)
+		return ch
+	}
+	snapshot := func(uid string) promises.Response[data.Entry] {
+		return promises.Response[data.Entry]{V: data.MustNewEntry(newPod(uid), data.STWatchList, data.CTSnapshot)}
+	}
+	// The first list fails partway through after sending uid-1. The retry must happen and must not resend uid-1.
+	failCalls := 0
+	failOnce := &fakeRelister{
+		listFunc: func(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error) {
+			failCalls++
+			if failCalls == 1 {
+				return respond(snapshot("uid-1"), promises.Response[data.Entry]{Err: errors.New("list error")}), nil
+			}
+			return respond(snapshot("uid-1"), snapshot("uid-2")), nil
+		},
+	}
 
 	tests := []struct {
-		name          string
-		retrieves     types.Retrieve
-		setupRelister func() (*relist.Relister, error)
-		setupChannel  func() chan data.Entry
-		ctxFunc       func() context.Context
-		wantErr       bool
-		wantEntries   int
+		name      string
+		retrieves types.Retrieve
+		relister  lister
+		// cancelled cancels the context before performRelist is called.
+		cancelled bool
+		wantErr   bool
+		// wantUIDs are the UIDs sent, sorted.
+		wantUIDs []k8stypes.UID
+		// calls, when set, reports how many times List was called and must equal wantCalls.
+		calls     func() int
+		wantCalls int
 	}{
 		{
-			name:      "successful relist for pods",
+			name:      "Success: relists every pod as a snapshot",
 			retrieves: types.RTPod,
-			setupRelister: func() (*relist.Relister, error) {
-				return relist.New(clientset)
-			},
-			setupChannel: func() chan data.Entry {
-				return make(chan data.Entry, 10)
-			},
-			ctxFunc: func() context.Context {
-				return context.Background()
-			},
-			wantErr:     false,
-			wantEntries: 2,
+			relister:  newRelister(),
+			wantUIDs:  []k8stypes.UID{"uid-1", "uid-2"},
 		},
 		{
-			name:      "context cancelled",
+			name:      "Error: the context is already cancelled",
 			retrieves: types.RTPod,
-			setupRelister: func() (*relist.Relister, error) {
-				return relist.New(clientset)
-			},
-			setupChannel: func() chan data.Entry {
-				return make(chan data.Entry, 10)
-			},
-			ctxFunc: func() context.Context {
-				ctx, cancel := context.WithCancel(context.Background())
-				cancel()
-				return ctx
-			},
-			wantErr:     true,
-			wantEntries: 0,
+			relister:  newRelister(),
+			cancelled: true,
+			wantErr:   true,
 		},
 		{
-			name:      "multiple resource types",
+			name:      "Success: a type with no objects adds nothing",
 			retrieves: types.RTPod | types.RTNamespace,
-			setupRelister: func() (*relist.Relister, error) {
-				return relist.New(clientset)
-			},
-			setupChannel: func() chan data.Entry {
-				return make(chan data.Entry, 10)
-			},
-			ctxFunc: func() context.Context {
-				return context.Background()
-			},
-			wantErr:     false,
-			wantEntries: 2, // Only pods in the fake clientset
+			relister:  newRelister(),
+			wantUIDs:  []k8stypes.UID{"uid-1", "uid-2"},
+		},
+		{
+			name:      "Success: a list that fails partway is retried without resending what was already sent",
+			retrieves: types.RTPod,
+			relister:  failOnce,
+			wantUIDs:  []k8stypes.UID{"uid-1", "uid-2"},
+			calls:     func() int { return failCalls },
+			wantCalls: 2,
 		},
 	}
 
 	for _, test := range tests {
-		relister, err := test.setupRelister()
-		if err != nil {
-			t.Fatalf("TestPerformRelist(%s): failed to setup relister: %v", test.name, err)
+		ctx := t.Context()
+		if test.cancelled {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			cancel()
 		}
 
-		ch := test.setupChannel()
-		ctx := test.ctxFunc()
-
+		// The channel holds every entry, so performRelist never blocks sending and can run here.
+		ch := make(chan data.Entry, 10)
 		r := &Reader{
 			retrieveTypes:  test.retrieves,
-			relister:       relister,
+			relister:       test.relister,
 			dataCh:         ch,
 			relistInterval: 1 * time.Hour,
 		}
 
-		// Run performRelist in a goroutine
-		done := make(chan error, 1)
-		go func() {
-			done <- r.performRelist(ctx)
-		}()
-
-		// Collect entries from the channel, waiting for expected count or timeout
-		var entries []data.Entry
-		collectTimeout := time.After(2 * time.Second)
-		methodDone := false
-
-	collectLoop:
-		for {
-			select {
-			case entry := <-ch:
-				entries = append(entries, entry)
-				// If we got all expected entries and the method is done, break
-				if len(entries) == test.wantEntries && methodDone {
-					break collectLoop
-				}
-			case err := <-done:
-				methodDone = true
-				if test.wantErr && err == nil {
-					t.Errorf("TestPerformRelist(%s): expected error but got none", test.name)
-					break collectLoop
-				}
-				if !test.wantErr && err != nil {
-					t.Errorf("TestPerformRelist(%s): expected no error but got: %v", test.name, err)
-					break collectLoop
-				}
-				// If we already got all expected entries, break
-				if len(entries) == test.wantEntries {
-					break collectLoop
-				}
-				// Otherwise keep collecting for a bit more
-			case <-collectTimeout:
-				break collectLoop
-			}
+		err := r.performRelist(ctx)
+		close(ch)
+		switch {
+		case test.wantErr && err == nil:
+			t.Errorf("TestPerformRelist(%s): got err == nil, want err != nil", test.name)
+			continue
+		case !test.wantErr && err != nil:
+			t.Errorf("TestPerformRelist(%s): got err == %s, want err == nil", test.name, err)
+			continue
 		}
 
-		if len(entries) != test.wantEntries {
-			t.Errorf("TestPerformRelist(%s): got %d entries, want %d", test.name, len(entries), test.wantEntries)
-		}
-
-		// Verify entries are snapshots
-		for i, entry := range entries {
+		var gotUIDs []k8stypes.UID
+		for entry := range ch {
 			if entry.ChangeType() != data.CTSnapshot {
-				t.Errorf("TestPerformRelist(%s): entry[%d].ChangeType() = %v, want %v", test.name, i, entry.ChangeType(), data.CTSnapshot)
+				t.Errorf("TestPerformRelist(%s): entry %s ChangeType() = %v, want %v", test.name, entry.UID(), entry.ChangeType(), data.CTSnapshot)
 			}
+			gotUIDs = append(gotUIDs, entry.UID())
 		}
-	}
-}
-
-// TestPerformRelistWithError tests error handling in performRelist
-func TestResetTimer(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		timerFired    bool
-		expectedReset bool
-	}{
-		{
-			name:          "Success: timer not fired, resets normally",
-			timerFired:    false,
-			expectedReset: true,
-		},
-		{
-			name:          "Success: timer already fired, drains channel and resets",
-			timerFired:    true,
-			expectedReset: true,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			// Create a timer with initial duration
-			initialDuration := 50 * time.Millisecond
-			timer := time.NewTimer(initialDuration)
-
-			if test.timerFired {
-				// Let the timer fire
-				<-timer.C
-			}
-
-			// Reset the timer with new duration
-			newDuration := 100 * time.Millisecond
-			resetTimer(newDuration, timer)
-
-			// Verify timer works correctly after reset
-			start := time.Now()
-			<-timer.C
-			elapsed := time.Since(start)
-
-			// Allow some tolerance for timing
-			minDuration := newDuration - 20*time.Millisecond
-			maxDuration := newDuration + 50*time.Millisecond
-
-			if elapsed < minDuration || elapsed > maxDuration {
-				t.Errorf("TestResetTimer(%s): timer fired after %v, expected ~%v", test.name, elapsed, newDuration)
-			}
-
-			// Verify channel is empty after reading
-			select {
-			case <-timer.C:
-				t.Errorf("TestResetTimer(%s): timer channel should be empty after reading", test.name)
-			default:
-				// Expected: channel is empty
-			}
-		})
+		slices.Sort(gotUIDs)
+		if diff := pretty.Compare(test.wantUIDs, gotUIDs); diff != "" {
+			t.Errorf("TestPerformRelist(%s): sent UIDs: -want/+got:\n%s", test.name, diff)
+		}
+		if test.calls != nil && test.calls() != test.wantCalls {
+			t.Errorf("TestPerformRelist(%s): got %d calls to List(), want %d", test.name, test.calls(), test.wantCalls)
+		}
 	}
 }
 
@@ -1273,7 +1374,7 @@ func TestHandleWatcher(t *testing.T) {
 		}
 
 		// Start connectWatcher to handle spawn requests
-		go r.connectWatcher(ctx, r.spawnCh)
+		context.Pool(t.Context()).Submit(t.Context(), func() { r.connectWatcher(ctx, r.spawnCh) })
 
 		// Create spawn function that returns errors as specified
 		sp := func(options metav1.ListOptions) (watch.Interface, error) {
@@ -1318,7 +1419,7 @@ func TestGetWatcher(t *testing.T) {
 				return &fakeWatcher{}, nil
 			},
 			setupFn: func(r *Reader, ctx context.Context) {
-				go r.connectWatcher(ctx, r.spawnCh)
+				context.Pool(t.Context()).Submit(t.Context(), func() { r.connectWatcher(ctx, r.spawnCh) })
 			},
 			wantErr: false,
 		},
@@ -1328,7 +1429,7 @@ func TestGetWatcher(t *testing.T) {
 				return nil, errors.New("connection failed")
 			},
 			setupFn: func(r *Reader, ctx context.Context) {
-				go r.connectWatcher(ctx, r.spawnCh)
+				context.Pool(t.Context()).Submit(t.Context(), func() { r.connectWatcher(ctx, r.spawnCh) })
 			},
 			wantErr: true,
 			errMsg:  "connection failed",
@@ -1383,7 +1484,7 @@ func TestGetWatcher(t *testing.T) {
 }
 
 func TestConnectWatcherThrottling(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it asserts the delay between watcher creations, which other tests competing for CPU would skew.
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -1398,7 +1499,7 @@ func TestConnectWatcherThrottling(t *testing.T) {
 	watcherCount := 3
 
 	// Start the connectWatcher goroutine
-	go r.connectWatcher(ctx, r.spawnCh)
+	context.Pool(t.Context()).Submit(t.Context(), func() { r.connectWatcher(ctx, r.spawnCh) })
 
 	// Send multiple spawn requests
 	for range watcherCount {
@@ -1411,9 +1512,10 @@ func TestConnectWatcherThrottling(t *testing.T) {
 			},
 		)
 
-		select {
-		case r.spawnCh <- promise:
-		case <-time.After(100 * time.Millisecond):
+		sendCtx, sendCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		sent := chans.Put(sendCtx, r.spawnCh, promise)
+		sendCancel()
+		if !sent {
 			t.Fatalf("TestConnectWatcherThrottling: timeout sending to spawn channel")
 		}
 
@@ -1440,37 +1542,6 @@ func TestConnectWatcherThrottling(t *testing.T) {
 			t.Errorf("TestConnectWatcherThrottling: delay between watcher %d and %d was %v, expected at least %v",
 				i-1, i, delay, minDelay)
 		}
-	}
-}
-
-func TestPerformRelistWithError(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	ch := make(chan data.Entry, 10)
-
-	// Create a mock relister that returns an error
-	relister := &fakeRelister{
-		listFunc: func(ctx context.Context, rt types.Retrieve) (chan promises.Response[data.Entry], error) {
-			respCh := make(chan promises.Response[data.Entry], 1)
-			go func() {
-				defer close(respCh)
-				respCh <- promises.Response[data.Entry]{Err: errors.New("list error")}
-			}()
-			return respCh, nil
-		},
-	}
-
-	r := &Reader{
-		retrieveTypes: types.RTPod,
-		relister:      relister,
-		dataCh:        ch,
-	}
-
-	// performRelist should log the error but not return it
-	err := r.performRelist(ctx)
-	if err != nil {
-		t.Errorf("TestPerformRelistWithError: performRelist should not return error for list failures, got: %v", err)
 	}
 }
 
@@ -1565,7 +1636,7 @@ func TestBookmarkingVersionThreshold(t *testing.T) {
 		fakeDisc := clientset.Discovery().(*fakediscovery.FakeDiscovery)
 		fakeDisc.FakedServerVersion = &version.Info{Major: "1", Minor: test.minor}
 
-		r, err := New(context.Background(), clientset, types.RTPod, test.opts...)
+		r, err := New(t.Context(), clientset, types.RTPod, test.opts...)
 		if err != nil {
 			t.Errorf("TestBookmarkingVersionThreshold(%s): got err == %s, want err == nil", test.name, err)
 			continue
@@ -1580,8 +1651,11 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                     string
-		bookmarking              bool
+		name        string
+		bookmarking bool
+		// resourceVersion is the bookmark the watch resumes from, applied with withResourceVersion as
+		// Reader.watch and Reader.handleWatcher do.
+		resourceVersion          string
 		wantWatch                bool
 		wantAllowWatchBookmarks  bool
 		wantResourceVersion      string
@@ -1598,11 +1672,21 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 			wantSendInitialEvents:    nil,
 		},
 		{
-			name:                     "Success: bookmarking enabled sends bookmark options",
+			name:                     "Success: bookmarking enabled without a bookmark asks for initial events so existing objects are sent",
 			bookmarking:              true,
 			wantWatch:                true,
 			wantAllowWatchBookmarks:  true,
 			wantResourceVersion:      "",
+			wantResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
+			wantSendInitialEvents:    ptr.To(true),
+		},
+		{
+			name:                     "Success: bookmarking enabled resuming from a bookmark does not replay initial events",
+			bookmarking:              true,
+			resourceVersion:          "100",
+			wantWatch:                true,
+			wantAllowWatchBookmarks:  true,
+			wantResourceVersion:      "100",
 			wantResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
 			wantSendInitialEvents:    ptr.To(false),
 		},
@@ -1619,12 +1703,13 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 			bookmarking:       test.bookmarking,
 		}
 
-		go r.connectWatcher(ctx, r.spawnCh)
+		context.Pool(t.Context()).Submit(t.Context(), func() { r.connectWatcher(ctx, r.spawnCh) })
 
-		promise := spawnReqMaker.New(ctx, func(options metav1.ListOptions) (watch.Interface, error) {
+		sp := func(options metav1.ListOptions) (watch.Interface, error) {
 			capturedOptions = options
 			return &fakeWatcher{}, nil
-		})
+		}
+		promise := spawnReqMaker.New(ctx, withResourceVersion(sp, test.resourceVersion))
 
 		r.spawnCh <- promise
 		_, err := promise.Get(ctx)
@@ -1645,8 +1730,8 @@ func TestConnectWatcherBookmarkOptions(t *testing.T) {
 		if capturedOptions.ResourceVersionMatch != test.wantResourceVersionMatch {
 			t.Errorf("TestConnectWatcherBookmarkOptions(%s): got ResourceVersionMatch == %q, want ResourceVersionMatch == %q", test.name, capturedOptions.ResourceVersionMatch, test.wantResourceVersionMatch)
 		}
-		if !reflect.DeepEqual(capturedOptions.SendInitialEvents, test.wantSendInitialEvents) {
-			t.Errorf("TestConnectWatcherBookmarkOptions(%s): got SendInitialEvents == %v, want SendInitialEvents == %v", test.name, capturedOptions.SendInitialEvents, test.wantSendInitialEvents)
+		if diff := pretty.Compare(test.wantSendInitialEvents, capturedOptions.SendInitialEvents); diff != "" {
+			t.Errorf("TestConnectWatcherBookmarkOptions(%s): SendInitialEvents: -want/+got:\n%s", test.name, diff)
 		}
 
 		cancel()
@@ -1666,6 +1751,9 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 		wantRVOnSecondReconnect string
 		wantDelete              bool
 		wantPermanent           bool
+		// wantRelist is set when a rejected bookmark must be recovered with a snapshot relist, with the reconnect
+		// made at the most recent resourceVersion without initial events.
+		wantRelist bool
 	}{
 		{
 			name:                    "Success: reconnection uses bookmarked resource version",
@@ -1682,6 +1770,7 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 			wantRVOnFirstReconnect:  "100",
 			wantRVOnSecondReconnect: "",
 			wantDelete:              true,
+			wantRelist:              true,
 		},
 		{
 			name:                    "Success: gone resource version resets bookmark",
@@ -1691,6 +1780,7 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 			wantRVOnFirstReconnect:  "100",
 			wantRVOnSecondReconnect: "",
 			wantDelete:              true,
+			wantRelist:              true,
 		},
 		{
 			name:                    "Success: malformed resource version resets bookmark",
@@ -1700,6 +1790,7 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 			wantRVOnFirstReconnect:  "malformed",
 			wantRVOnSecondReconnect: "",
 			wantDelete:              true,
+			wantRelist:              true,
 		},
 		{
 			name:                    "Success: transient failure preserves bookmark",
@@ -1710,13 +1801,14 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 			wantRVOnSecondReconnect: "100",
 		},
 		{
-			name:                    "Success: stale watcher preserves replacement bookmark",
+			name:                    "Success: stale watcher leaves another reader's replacement bookmark in place and relists instead of resuming from it",
 			bookmarking:             true,
 			bookmarkRV:              "100",
 			spawnErr:                apierrors.NewResourceExpired("the resourceVersion is too old"),
 			replacementRV:           "500",
 			wantRVOnFirstReconnect:  "100",
-			wantRVOnSecondReconnect: "500",
+			wantRVOnSecondReconnect: "",
+			wantRelist:              true,
 		},
 		{
 			name:                    "Success: no bookmarking does not set resource version",
@@ -1743,12 +1835,15 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 		var capturedOptions []metav1.ListOptions
 		spawnCallCount := 0
 		store := storefake.New(map[schema.GroupVersionResource]string{namespaceGVR: test.bookmarkRV})
+		relisted := make(chan types.Retrieve, 1)
 
 		r := &Reader{
 			spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 			watcherSpawnDelay: 1 * time.Millisecond,
 			bookmarking:       test.bookmarking,
 			bookmarkStore:     store,
+			relister:          newRecordingRelister(relisted),
+			dataCh:            make(chan data.Entry, 1),
 			fakeWatchEvents: func(ctx context.Context, watcher watch.Interface) (string, error) {
 				watchCallCount++
 				switch watchCallCount {
@@ -1763,7 +1858,7 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 			},
 		}
 
-		go r.connectWatcher(ctx, r.spawnCh)
+		context.Pool(t.Context()).Submit(t.Context(), func() { r.connectWatcher(ctx, r.spawnCh) })
 
 		sp := func(options metav1.ListOptions) (watch.Interface, error) {
 			spawnCallCount++
@@ -1780,14 +1875,20 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 		}
 
 		done := make(chan error, 1)
-		go func() {
-			done <- r.handleWatcher(ctx, types.RTNamespace, namespaceGVR, "", &fakeWatcher{}, sp)
-		}()
+		context.Pool(t.Context()).Submit(
+			t.Context(),
+			func() { done <- r.handleWatcher(ctx, types.RTNamespace, namespaceGVR, "", &fakeWatcher{}, sp) },
+		)
 
 		time.Sleep(200 * time.Millisecond)
 		cancel()
 
 		err := <-done
+		_ = r.waitWatchers.Wait(t.Context())
+		// A relist after cancel returns before calling List, so this only sees relists made while running.
+		if _, gotRelist, _ := chans.TryGet(relisted); gotRelist != test.wantRelist {
+			t.Errorf("TestHandleWatcherBookmarkReconnection(%s): got relist == %v, want %v", test.name, gotRelist, test.wantRelist)
+		}
 		if got := errors.Is(err, exponential.ErrPermanent); got != test.wantPermanent {
 			t.Errorf("TestHandleWatcherBookmarkReconnection(%s): permanent error got %v, want %v: %v", test.name, got, test.wantPermanent, err)
 		}
@@ -1805,8 +1906,13 @@ func TestHandleWatcherBookmarkReconnection(t *testing.T) {
 			if capturedOptions[1].ResourceVersion != test.wantRVOnSecondReconnect {
 				t.Errorf("TestHandleWatcherBookmarkReconnection(%s): second reconnect got ResourceVersion == %q, want %q", test.name, capturedOptions[1].ResourceVersion, test.wantRVOnSecondReconnect)
 			}
+			if test.wantRelist {
+				if diff := pretty.Compare(ptr.To(false), capturedOptions[1].SendInitialEvents); diff != "" {
+					t.Errorf("TestHandleWatcherBookmarkReconnection(%s): recovery reconnect SendInitialEvents: -want/+got:\n%s", test.name, diff)
+				}
+			}
 		}
-		if gotDelete := len(store.Deletes()) > 0; gotDelete != test.wantDelete {
+		if gotDelete := store.Deletes().Len() > 0; gotDelete != test.wantDelete {
 			t.Errorf("TestHandleWatcherBookmarkReconnection(%s): got bookmark delete == %v, want %v", test.name, gotDelete, test.wantDelete)
 		}
 	}

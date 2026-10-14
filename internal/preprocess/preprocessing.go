@@ -6,9 +6,10 @@ Processors are read only and are not allowed to alter data.
 package preprocess
 
 import (
-	"context"
+	"fmt"
 
 	"github.com/Azure/tattler/data"
+	"github.com/gostdlib/base/context"
 )
 
 // Processor is function that processes data before it is sent downstream. It must be thread-safe.
@@ -21,24 +22,19 @@ type Runner struct {
 	procs   []Processor
 }
 
-// Option is an option for New().
-type Option func(*Runner) error
-
 // New creates a new Runner. A runner can be stopped by closing the input channel.
-func New(ctx context.Context, in, out chan data.Entry, procs []Processor, options ...Option) (*Runner, error) {
+func New(ctx context.Context, in, out chan data.Entry, procs []Processor) (*Runner, error) {
 	r := &Runner{
 		in:    in,
 		out:   out,
 		procs: procs,
 	}
 
-	for _, o := range options {
-		if err := o(r); err != nil {
-			return nil, err
-		}
+	// run parks on in for the life of the pipeline, so it goes on the unlimited Default pool rather than taking a
+	// slot from a Limited one.
+	if !context.Pool(ctx).Default().Submit(ctx, func() { r.run(ctx) }) {
+		return nil, fmt.Errorf("preprocess.New: could not start the runner: %w", context.Cause(ctx))
 	}
-
-	go r.run(ctx)
 
 	return r, nil
 }

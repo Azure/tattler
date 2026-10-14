@@ -1,10 +1,11 @@
 package readers
 
 import (
-	"context"
 	"testing"
 
 	"github.com/Azure/tattler/data"
+	"github.com/gostdlib/base/context"
+	"github.com/kylelemons/godebug/pretty"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -12,6 +13,7 @@ import (
 	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	corev1 "k8s.io/api/core/v1"
@@ -21,7 +23,7 @@ import (
 // Based on
 // https://github.com/open-telemetry/opentelemetry-go/blob/c609b12d9815bbad0810d67ee0bfcba0591138ce/exporters/prometheus/exporter_test.go
 func TestWatchListMetrics(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it resets and re-initializes the package-level metrics.
 
 	tests := []struct {
 		name               string
@@ -32,8 +34,11 @@ func TestWatchListMetrics(t *testing.T) {
 		options            []otelprometheus.Option
 	}{
 		{
-			name: "batching metrics",
+			name: "Success: initialized metrics record a watch event and a data entry",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
+				// Init only binds the counters once per process, so without this a repeated run records to the meter
+				// from the first run.
+				testResetOnce()
 				Init(meter)
 				events := []watch.Event{
 					{
@@ -48,7 +53,7 @@ func TestWatchListMetrics(t *testing.T) {
 			wantMetricCount: 3,
 		},
 		{
-			name: "batching metrics not initialized",
+			name: "Success: uninitialized metrics record nothing",
 			recordMetrics: func(ctx context.Context, meter otelmetric.Meter) {
 				WatchEvent(ctx, watch.Event{Type: watch.Added})
 				DataEntry(ctx, data.MustNewEntry(&corev1.Node{}, data.STInformer, data.CTAdd))
@@ -132,6 +137,98 @@ func TestWatchListMetrics(t *testing.T) {
 					t.Errorf("TestWatchListMetrics(%s) unexpected metric type %s for metric %s", test.name, mf.GetType().String(), mf.GetName())
 				}
 			}
+		}
+	}
+}
+
+// recorded initializes the package metrics against a fresh reader, runs record and returns the attributes of every data
+// point recorded to the metric named name, as sorted "key=value" strings.
+func recorded(t *testing.T, name string, record func(ctx context.Context)) [][]string {
+	reader := metric.NewManualReader()
+	testResetOnce()
+	if err := Init(metric.NewMeterProvider(metric.WithReader(reader)).Meter("test")); err != nil {
+		t.Fatalf("Init() got err == %s, want err == nil", err)
+	}
+	record(t.Context())
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatalf("Collect() got err == %s, want err == nil", err)
+	}
+	var got [][]string
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric %s got data %T, want metricdata.Sum[int64]", name, m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				var attrs []string
+				for _, kv := range dp.Attributes.ToSlice() {
+					attrs = append(attrs, string(kv.Key)+"="+kv.Value.Emit())
+				}
+				got = append(got, attrs)
+			}
+		}
+	}
+	return got
+}
+
+func TestWatchEvent(t *testing.T) {
+	// Not parallel: it resets and re-initializes the package-level metrics.
+
+	tests := []struct {
+		name  string
+		event watch.Event
+		want  [][]string
+	}{
+		{
+			name:  "Success: a known event type uses the attributes built in Init",
+			event: watch.Event{Type: watch.Modified},
+			want:  [][]string{{"event_type=MODIFIED"}},
+		},
+		{
+			name:  "Success: an unknown event type builds its attributes",
+			event: watch.Event{Type: watch.EventType("CUSTOM")},
+			want:  [][]string{{"event_type=CUSTOM"}},
+		},
+	}
+
+	for _, test := range tests {
+		got := recorded(t, metricName("watch_event_total"), func(ctx context.Context) { WatchEvent(ctx, test.event) })
+		if diff := pretty.Compare(test.want, got); diff != "" {
+			t.Errorf("TestWatchEvent(%s): -want/+got:\n%s", test.name, diff)
+		}
+	}
+}
+
+func TestDataEntry(t *testing.T) {
+	// Not parallel: it resets and re-initializes the package-level metrics.
+
+	tests := []struct {
+		name  string
+		entry data.Entry
+		want  [][]string
+	}{
+		{
+			name:  "Success: a watchlist pod update",
+			entry: data.MustNewEntry(&corev1.Pod{}, data.STWatchList, data.CTUpdate),
+			want:  [][]string{{"change_type=Update", "keep=true", "object_type=Pod", "source_type=WatchList"}},
+		},
+		{
+			name:  "Success: the last value of every type, which sits at the edge of the table built in Init",
+			entry: data.MustNewEntry(&corev1.Endpoints{}, data.STEtcd, data.CTSnapshot),
+			want:  [][]string{{"change_type=Snapshot", "keep=true", "object_type=Endpoint", "source_type=Etcd"}},
+		},
+	}
+
+	for _, test := range tests {
+		got := recorded(t, metricName("data_entry_total"), func(ctx context.Context) { DataEntry(ctx, test.entry) })
+		if diff := pretty.Compare(test.want, got); diff != "" {
+			t.Errorf("TestDataEntry(%s): -want/+got:\n%s", test.name, diff)
 		}
 	}
 }

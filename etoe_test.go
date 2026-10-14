@@ -8,6 +8,7 @@ import (
 	"github.com/Azure/tattler/readers/apiserver/watchlist"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/values/chans"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -28,15 +29,11 @@ func newFakeProcessor() *fakeProcessor {
 
 func (f *fakeProcessor) process(ctx context.Context, entryCh <-chan data.Entry) {
 	for {
-		select {
-		case <-ctx.Done():
+		entry, res := chans.Get(ctx, entryCh)
+		if res != chans.ResultOK {
 			return
-		case entry, ok := <-entryCh:
-			if !ok {
-				return
-			}
-			f.receivedCh <- entry
 		}
+		f.receivedCh <- entry
 	}
 }
 
@@ -55,7 +52,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	clientset := fake.NewSimpleClientset()
-	
+
 	// Create a fake watcher that we control
 	watcher := watch.NewFake()
 
@@ -94,7 +91,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Create and start the fake processor
 	processor := newFakeProcessor()
-	go processor.process(ctx, processorCh)
+	context.Pool(t.Context()).Submit(t.Context(), func() { processor.process(ctx, processorCh) })
 
 	// Start tattler
 	err = runner.Start(ctx)
@@ -109,26 +106,27 @@ func TestEndToEnd(t *testing.T) {
 	watcher.Add(testPod)
 
 	// Wait for the event to reach the processor
-	select {
-	case entry := <-processor.receivedCh:
-		if entry.ObjectType() != data.OTPod {
-			t.Errorf("TestEndToEnd: expected object type Pod, got %v", entry.ObjectType())
-		}
-		if entry.SourceType() != data.STWatchList {
-			t.Errorf("TestEndToEnd: expected source type WatchList, got %v", entry.SourceType())
-		}
-		if entry.UID() != testPod.UID {
-			t.Errorf("TestEndToEnd: expected UID %v, got %v", testPod.UID, entry.UID())
-		}
+	waitCtx, waitCancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer waitCancel()
+	entry, res := chans.Get(waitCtx, processor.receivedCh)
+	if res != chans.ResultOK {
+		t.Fatalf("TestEndToEnd: timeout waiting for event to reach processor")
+	}
+	if entry.ObjectType() != data.OTPod {
+		t.Errorf("TestEndToEnd: expected object type Pod, got %v", entry.ObjectType())
+	}
+	if entry.SourceType() != data.STWatchList {
+		t.Errorf("TestEndToEnd: expected source type WatchList, got %v", entry.SourceType())
+	}
+	if entry.UID() != testPod.UID {
+		t.Errorf("TestEndToEnd: expected UID %v, got %v", testPod.UID, entry.UID())
+	}
 
-		pod, err := entry.Pod()
-		if err != nil {
-			t.Errorf("TestEndToEnd: failed to get pod from entry: %v", err)
-		}
-		if pod.Name != testPod.Name {
-			t.Errorf("TestEndToEnd: expected pod name %v, got %v", testPod.Name, pod.Name)
-		}
-	case <-time.After(2 * time.Second):
-		t.Errorf("TestEndToEnd: timeout waiting for event to reach processor")
+	pod, err := entry.Pod()
+	if err != nil {
+		t.Errorf("TestEndToEnd: failed to get pod from entry: %v", err)
+	}
+	if pod.Name != testPod.Name {
+		t.Errorf("TestEndToEnd: expected pod name %v, got %v", testPod.Name, pod.Name)
 	}
 }

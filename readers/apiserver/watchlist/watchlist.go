@@ -1,7 +1,6 @@
 package watchlist
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -15,14 +14,14 @@ import (
 	"github.com/Azure/tattler/readers/apiserver/watchlist/types"
 	"github.com/gostdlib/base/concurrency/sync"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
 	"github.com/gostdlib/base/retry/exponential"
+	"github.com/gostdlib/base/values/chans"
 	"github.com/gostdlib/base/values/generics/promises"
 	"github.com/gostdlib/base/values/generics/sets"
 
-	"go.opentelemetry.io/otel/metric"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8Types "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
@@ -58,10 +57,6 @@ type Reader struct {
 	waitWatchers  sync.Group
 	cancelWatches context.CancelFunc
 	started       bool
-	meterProvider metric.MeterProvider
-
-	// List functions for each resource type
-	listFunctions map[types.Retrieve][]spawnLister
 
 	closeCh chan struct{}
 	mu      sync.Mutex
@@ -73,7 +68,7 @@ type Reader struct {
 	testPerformRelist      func()
 }
 
-// Option is an option for New(). Unused for now.
+// Option for New().
 type Option func(*Reader) error
 
 // WithRelist will set a duration in which we will relist all the objects in the APIServer using List() API calls.
@@ -105,22 +100,6 @@ func WithBookmarkStore(store store.Bookmarks) Option {
 	}
 }
 
-// rtMap is a dynamically created map of RetrieveType.
-var rtMap = map[types.Retrieve]func(ctx context.Context) []watchSpec{}
-
-func init() {
-	var i uint32 = 0
-
-	for {
-		rt := types.Retrieve(1 << i)
-		if strings.HasPrefix(rt.String(), "Retrieve(") {
-			break
-		}
-		rtMap[rt] = nil
-		i++
-	}
-}
-
 // New creates a new Reader object. retrieveTypes is a bitwise flag to determine what data to retrieve.
 func New(ctx context.Context, clientset kubernetes.Interface, retrieveTypes types.Retrieve, opts ...Option) (*Reader, error) {
 	if clientset == nil {
@@ -137,17 +116,26 @@ func New(ctx context.Context, clientset kubernetes.Interface, retrieveTypes type
 		return nil, err
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	// Make sure they passed a valid retrieveTypes: at least one flag, and no bit that is not a known flag.
+	if retrieveTypes == 0 {
+		return nil, fmt.Errorf("no data types to retrieve")
+	}
+	for i := 0; i < 32; i++ {
+		bit := types.Retrieve(1 << i)
+		if retrieveTypes&bit != 0 && !bit.Valid() {
+			return nil, fmt.Errorf("unknown data type to retrieve: %v", bit)
+		}
+	}
 
 	r := &Reader{
 		clientset:         clientset,
 		retrieveTypes:     retrieveTypes,
 		relistInterval:    -1, // This indicates never.
 		relister:          relister,
-		cancel:            cancel,
 		closeCh:           make(chan struct{}),
 		spawnCh:           make(chan promises.Value[spawnWatcher, watch.Interface]),
 		watcherSpawnDelay: 10 * time.Second,
+		waitWatchers:      context.Pool(ctx).Default().Group(),
 	}
 
 	for _, opt := range opts {
@@ -165,26 +153,21 @@ func New(ctx context.Context, clientset kubernetes.Interface, retrieveTypes type
 			"kubernetesVersion", fmt.Sprintf("%d.%d", ver[0], ver[1]),
 		)
 	}
-	// Make sure they passed a valid retrieveTypes.
-	found := false
-	for rt := range rtMap {
-		if retrieveTypes&rt == rt {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, fmt.Errorf("no data types to retrieve")
-	}
 
-	_ = context.Tasks(ctx).Once(
+	// The cancellable context is created only once nothing else can fail, so an error return cannot leak it.
+	ctx, r.cancel = context.WithCancel(ctx)
+
+	if err = context.Tasks(ctx).Once(
 		ctx,
 		"watchlistSpawnWatchers",
 		func(ctx context.Context) error {
 			r.connectWatcher(ctx, r.spawnCh)
 			return nil
 		},
-	)
+	); err != nil {
+		r.cancel()
+		return nil, fmt.Errorf("error starting the watcher spawner: %w", err)
+	}
 
 	return r, nil
 }
@@ -208,8 +191,10 @@ func (r *Reader) close(ctx context.Context) error {
 	r.cancel()
 	r.cancelWatches()
 
-	_ = r.waitWatchers.Wait(ctx)
-	close(r.spawnCh)
+	defer close(r.spawnCh)
+	if err := r.waitWatchers.Wait(ctx); err != nil {
+		return fmt.Errorf("watchers stopped with errors: %w", err)
+	}
 	return nil
 }
 
@@ -233,12 +218,32 @@ type watchSpec struct {
 	spawn spawnWatcher
 }
 
+// withResourceVersion returns sp with the watch resuming from resourceVersion. A resumed WatchList watch does not
+// ask for initial events, as those objects were already sent before the bookmark was taken. If resourceVersion is
+// empty, sp is returned unchanged so the watch starts with the current state of every object.
 func withResourceVersion(sp spawnWatcher, resourceVersion string) spawnWatcher {
 	if resourceVersion == "" {
 		return sp
 	}
 	return func(options metav1.ListOptions) (watch.Interface, error) {
 		options.ResourceVersion = resourceVersion
+		// nil means the server does not support WatchList and connectWatcher fell back to a standard watch.
+		if options.SendInitialEvents != nil {
+			options.SendInitialEvents = ptr.To(false)
+		}
+		return sp(options)
+	}
+}
+
+// withoutInitialEvents returns sp with a WatchList watch starting at the most recent resourceVersion without sending
+// existing objects. It is used after a rejected bookmark, where relistGap() sends the current state as a snapshot
+// instead. A standard watch (nil SendInitialEvents, used when the server does not support WatchList) cannot start at
+// the most recent resourceVersion without one, so it still replays existing objects.
+func withoutInitialEvents(sp spawnWatcher) spawnWatcher {
+	return func(options metav1.ListOptions) (watch.Interface, error) {
+		if options.SendInitialEvents != nil {
+			options.SendInitialEvents = ptr.To(false)
+		}
 		return sp(options)
 	}
 }
@@ -267,26 +272,38 @@ func (r *Reader) storeBookmark(ctx context.Context, key schema.GroupVersionResou
 	return nil
 }
 
-func (r *Reader) clearStaleBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) (string, error) {
+// clearBookmark deletes the stored bookmark for key if it is still resourceVersion. If another Reader sharing the store
+// has already replaced it, the replacement is left alone but not resumed from: this Reader did not see the events
+// before it, so it recovers with relistGap() instead.
+func (r *Reader) clearBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) error {
 	if r.bookmarkStore == nil || key.Empty() {
-		return "", nil
+		return nil
 	}
 	err := r.bookmarkStore.Delete(ctx, key, resourceVersion)
-	if err == nil {
-		return "", nil
+	if err == nil || errors.Is(err, store.ErrBookmarkChanged) {
+		return nil
 	}
-	if !errors.Is(err, store.ErrBookmarkChanged) {
-		return "", fmt.Errorf("error clearing bookmark(%s): %w", bookmarkName(key), err)
-	}
-	replacement, err := r.bookmarkStore.Load(ctx, key)
-	if err != nil {
-		return "", fmt.Errorf("error loading replacement bookmark(%s): %w", bookmarkName(key), err)
-	}
-	return replacement, nil
+	return fmt.Errorf("error clearing bookmark(%s): %w", bookmarkName(key), err)
 }
 
-// spawnLister is a function that creates a lister for a resource.
-type spawnLister func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error)
+// relistGap sends a snapshot of rt after one of its bookmarks was rejected, so consumers can reconcile the changes,
+// including deletes, that happened while the bookmark was stale. The watcher must already be running so nothing after
+// the list is missed. This runs in waitWatchers so Close() waits for it.
+func (r *Reader) relistGap(ctx context.Context, rt types.Retrieve) {
+	context.Log(ctx).Warn(fmt.Sprintf("bookmark for %v was rejected, relisting to recover changes missed while it was stale", rt))
+	// The Group gets a context that cannot be cancelled, because Group records a cancelled context as an error and
+	// Close() would report the cancellation it caused.
+	r.waitWatchers.Go(
+		context.WithoutCancel(ctx),
+		func(context.Context) error {
+			if ctx.Err() != nil {
+				return nil
+			}
+			r.relistType(ctx, rt)
+			return nil
+		},
+	)
+}
 
 // Run starts the Reader. This will start all watchers and begin sending data to the output channel.
 func (r *Reader) Run(ctx context.Context) (err error) {
@@ -300,26 +317,29 @@ func (r *Reader) Run(ctx context.Context) (err error) {
 		return fmt.Errorf("cannot call Run if SetOut has not been called(%v)", r.dataCh)
 	}
 
+	// Watchers outlive Run, so they must not stop when the caller's ctx does. watchCtx drops the caller's cancellation
+	// and is cancelled only by the Reader: by Close(), by the startup watchdog, or by a failed Run below.
+	watchCtx, cancelWatches := context.WithCancel(context.WithoutCancel(ctx))
+	r.cancelWatches = cancelWatches
+
+	// If any type fails to start, stop the watchers already started for other types. This does not use close(): the
+	// Reader has not started, so Close() must keep refusing, and closeCh and spawnCh stay open so Run can be retried.
 	defer func() {
 		if err != nil {
-			r.close(ctx)
+			r.cancelWatches()
+			_ = r.waitWatchers.Wait(ctx)
 		}
 	}()
 
-	ctx, r.cancelWatches = context.WithCancel(context.WithoutCancel(ctx))
-
-	for rt := range rtMap {
+	for rt := range types.ListRetrieve() {
 		if r.retrieveTypes&rt == rt {
-			if err := r.startWatch(ctx, r.cancelWatches, rt); err != nil {
-				if errors.Is(err, context.Canceled) {
-					err = fmt.Errorf("could not connect to server by deadline")
-				}
-				return fmt.Errorf("error starting %s watcher: %v", rt.String(), err)
+			if err = r.startWatch(watchCtx, r.cancelWatches, rt); err != nil {
+				return err
 			}
 		}
 	}
 
-	r.relistTask(ctx)
+	r.relistTask(watchCtx)
 	r.started = true
 	return nil
 }
@@ -328,10 +348,9 @@ func (r *Reader) Run(ctx context.Context) (err error) {
 // be started. If the context is canceled, this will return an error.
 // This is a funky thing because if the cluster is not working, a call to Watch() will hang indefinitely.
 // If you pass a context to Watch(), if it connects it will error when the context is canceled.
-// So, we have to watch for a bit in another goroutine and then cancel the context if it doesn't connect.
+// So, we cancel the context if the watchers have not connected within a deadline.
 func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt types.Retrieve) error {
-	finished := make(chan struct{})
-	timer := time.After(30 * time.Second)
+	deadline := 30 * time.Second
 
 	var ws []watchSpec
 	switch rt {
@@ -344,7 +363,7 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt t
 	case types.RTPersistentVolume:
 		ws = r.createPersistentVolumesWatcher(ctx)
 	case types.RTRBAC:
-		timer = time.After(2 * time.Minute) // This one spawns 4 watchers
+		deadline = 2 * time.Minute // This one spawns 4 watchers
 		ws = r.createRBACWatcher(ctx)
 	case types.RTService:
 		ws = r.createServicesWatcher(ctx)
@@ -358,22 +377,22 @@ func (r *Reader) startWatch(ctx context.Context, cancel context.CancelFunc, rt t
 		return fmt.Errorf("unknown resource type: %v", rt)
 	}
 
-	go func() {
-		select {
-		case <-finished:
-		case <-timer:
-			cancel()
-		}
-	}()
+	// Stopping the watchdog when watch() returns, success or failure, means it can never fire later and cancel
+	// watchers that have nothing to do with this attempt. Run() handles cleanup when this returns an error.
+	watchdog := time.AfterFunc(deadline, cancel)
+	defer watchdog.Stop()
 
-	if err := r.watch(ctx, rt, ws); err != nil {
-		return fmt.Errorf("error starting %s watcher: %v", rt, err)
+	err := r.watch(ctx, rt, ws)
+	// Run() detaches ctx from its caller, so the only thing that can cancel it here is the watchdog.
+	switch {
+	case ctx.Err() != nil && err != nil:
+		return fmt.Errorf("error starting %v watcher: could not connect to server within %v: %w: %w", rt, deadline, ctx.Err(), err)
+	case ctx.Err() != nil:
+		return fmt.Errorf("error starting %v watcher: could not connect to server within %v: %w", rt, deadline, ctx.Err())
+	case err != nil:
+		return fmt.Errorf("error starting %v watcher: %w", rt, err)
 	}
-	if ctx.Err() != nil {
-		return fmt.Errorf("error starting namespace watcher: could not connect to server in time")
-	}
-	close(finished)
-	return ctx.Err()
+	return nil
 }
 
 var spawnReqMaker = &promises.Maker[spawnWatcher, watch.Interface]{}
@@ -391,6 +410,8 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, ws []watchSpec) (
 		return nil
 	}
 
+	// gap is set if any stored bookmark was rejected, which means changes were missed and rt must be relisted.
+	gap := false
 	watchers := make([]watch.Interface, len(ws))
 	for i, rw := range ws {
 		key := rw.gvr
@@ -405,28 +426,34 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, ws []watchSpec) (
 			}
 		}
 		w, err := r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
-		for err != nil && resourceVersion != "" && rejectedResourceVersion(err) {
-			replacement, clearErr := r.clearStaleBookmark(ctx, key, resourceVersion)
-			if clearErr != nil {
+		if err != nil && resourceVersion != "" && rejectedResourceVersion(err) {
+			if clearErr := r.clearBookmark(ctx, key, resourceVersion); clearErr != nil {
 				return clearErr
 			}
-			resourceVersion = replacement
-			w, err = r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
+			resourceVersion = ""
+			gap = true
+			w, err = r.getWatcher(ctx, rt, withoutInitialEvents(sp))
 		}
 		if err != nil {
 			return err
 		}
 		watchers[i] = w
 
+		// sync.Group skips a function whose context is already cancelled when its goroutine starts, which would leak w
+		// if Close() or a failed Run() cancels right after this. The Group gets a context that cannot be cancelled so
+		// w is always stopped, and handleWatcher gets ctx so it still exits as soon as ctx is cancelled.
 		r.waitWatchers.Go(
-			ctx,
-			func(ctx context.Context) error {
+			context.WithoutCancel(ctx),
+			func(context.Context) error {
 				defer w.Stop()
 				return r.handleWatcher(ctx, rt, key, resourceVersion, w, sp)
 			},
 		)
 	}
 
+	if gap {
+		r.relistGap(ctx, rt)
+	}
 	return nil
 }
 
@@ -434,6 +461,8 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, ws []watchSpec) (
 // an error and Context is not cancelled, our retrier will try and get a new watcher. This will block until the context
 // is canceled.
 func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schema.GroupVersionResource, resourceVersion string, w watch.Interface, sp spawnWatcher) error {
+	// gap is set when a bookmark was rejected while reconnecting, which means changes were missed and rt must be relisted.
+	gap := false
 	for {
 		rv, err := r.watchEvents(ctx, key, w)
 		if rv != "" {
@@ -451,22 +480,25 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 			func(ctx context.Context, _ exponential.Record) error {
 				attemptedResourceVersion := resourceVersion != ""
 				wrapped := sp
-				if r.bookmarking && attemptedResourceVersion {
+				switch {
+				case r.bookmarking && attemptedResourceVersion:
 					wrapped = withResourceVersion(sp, resourceVersion)
+				case gap:
+					wrapped = withoutInitialEvents(sp)
 				}
 				var err error
 				w, err = r.getWatcher(ctx, rt, wrapped)
 				if err != nil {
-					if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+					switch {
+					case apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err):
 						return fmt.Errorf("%w: %w", err, exponential.ErrPermanent)
-					}
-					if attemptedResourceVersion && rejectedResourceVersion(err) {
-						replacement, clearErr := r.clearStaleBookmark(ctx, key, resourceVersion)
-						if clearErr != nil {
+					case attemptedResourceVersion && rejectedResourceVersion(err):
+						if clearErr := r.clearBookmark(ctx, key, resourceVersion); clearErr != nil {
 							return clearErr
 						}
-						resourceVersion = replacement
-					} else if !attemptedResourceVersion && invalidWatchRequest(err) {
+						resourceVersion = ""
+						gap = true
+					case !attemptedResourceVersion && invalidWatchRequest(err):
 						return fmt.Errorf("%w: %w", err, exponential.ErrPermanent)
 					}
 					context.Log(ctx).Error(fmt.Sprintf("error re-creating watcher(%v): %v", rt, err))
@@ -474,9 +506,17 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 				return err
 			},
 		)
-		if err != nil {
+		switch {
+		// Retry gives up with the context's error when the Reader is closed, which is a normal stop, not a failure.
+		case err != nil && ctx.Err() != nil:
+			return nil
+		case err != nil:
 			context.Log(ctx).Error(fmt.Sprintf("critical error on watcher(%v) recreation: %v", rt, err))
-			return err
+			return fmt.Errorf("error re-creating %v watcher: %w", rt, err)
+		}
+		if gap {
+			r.relistGap(ctx, rt)
+			gap = false
 		}
 	}
 }
@@ -487,11 +527,12 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Value[spaw
 	watchListEnabled := r.bookmarking
 	so := metav1.ListOptions{Watch: true}
 	if r.bookmarking {
-		// The resourceVersion is added by handleWatcher() during restarts.
-		// Explicitly disable initial events so reconnects do not replay all watched objects.
+		// A watch without a resourceVersion streams every existing object first, the same as a standard watch does.
+		// When resuming from a bookmark, withResourceVersion() sets the resourceVersion and turns initial events off
+		// so reconnects do not replay all watched objects.
 		so.AllowWatchBookmarks = true
 		so.ResourceVersionMatch = metav1.ResourceVersionMatchNotOlderThan
-		so.SendInitialEvents = ptr.To(false)
+		so.SendInitialEvents = ptr.To(true)
 	}
 
 	for req := range ch {
@@ -512,6 +553,9 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Value[spaw
 	}
 }
 
+// watchListFeatureDisabled reports whether err is the API server rejecting sendInitialEvents because the WatchList
+// feature gate is off. The API server (k8s.io/apimachinery v0.34.0-beta.0) returns this as a generic Invalid status
+// whose only distinguishing detail is the cause message, so there is no typed error or reason code to check.
 func watchListFeatureDisabled(err error) bool {
 	if !apierrors.IsInvalid(err) {
 		return false
@@ -582,29 +626,31 @@ func (r *Reader) watchEvents(ctx context.Context, key schema.GroupVersionResourc
 // is a bookmark, the resource version is returned. If the context is canceled or the input channel
 // is closed, io.EOF is returned. If it is a watch.Error, the error is logged and nil is returned.
 func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper func()) (string, error) {
-	select {
-	case <-ctx.Done():
+	// Get keeps returning buffered events after ctx is done, so anything but ResultOK stops the watcher. Close()
+	// cancels ctx and then waits for every watcher to exit.
+	event, res := chans.Get(ctx, ch)
+	if res != chans.ResultOK {
 		stopper()
 		return "", io.EOF
-	case event, ok := <-ch:
-		if !ok {
-			stopper()
-			return "", io.EOF
-		}
-		metrics.WatchEvent(ctx, event)
-		switch event.Type {
-		case watch.Bookmark:
-			return event.Object.(metav1.Object).GetResourceVersion(), nil
-		case watch.Error:
-			context.Log(ctx).Error(fmt.Sprintf("Watch Error: %v", event.Object))
-			return "", nil
-		}
-		entry, err := data.WatchEventToEntry(event)
-		if err != nil {
-			context.Log(ctx).Error(fmt.Sprintf("error converting watch event to entry: %v", err))
-			return "", nil
-		}
-		r.dataCh <- entry
+	}
+	metrics.WatchEvent(ctx, event)
+	switch event.Type {
+	case watch.Bookmark:
+		return event.Object.(metav1.Object).GetResourceVersion(), nil
+	case watch.Error:
+		context.Log(ctx).Error(fmt.Sprintf("Watch Error: %v", event.Object))
+		return "", nil
+	}
+	entry, err := data.WatchEventToEntry(event)
+	if err != nil {
+		context.Log(ctx).Error(fmt.Sprintf("error converting watch event to entry: %v", err))
+		return "", nil
+	}
+	// A stalled consumer must not keep this watcher alive after Close(), which cancels ctx and then waits for
+	// every watcher to exit.
+	if !chans.Put(ctx, r.dataCh, entry) {
+		stopper()
+		return "", io.EOF
 	}
 
 	return "", nil
@@ -651,51 +697,61 @@ func (r *Reader) relistTask(ctx context.Context) {
 // performRelist performs a relist operation by calling List() for all active resource types. This handles all
 // exponential backoff and retries. If the context is canceled, this will return an error.
 func (r *Reader) performRelist(ctx context.Context) error {
-	for rt := range rtMap {
+	for rt := range types.ListRetrieve() {
 		if r.retrieveTypes&rt == rt {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			var ch chan promises.Response[data.Entry]
-
-			err := back.Retry(
-				ctx,
-				func(ctx context.Context, _ exponential.Record) error {
-					seen := sets.Set[k8Types.UID]{}
-
-					if ctx.Err() != nil {
-						return ctx.Err()
-					}
-					var err error
-					ch, err = r.relister.List(ctx, rt)
-					if err != nil {
-						context.Log(ctx).Error(fmt.Sprintf("relister.List had supported type error: %s", err.Error()))
-						return err
-					}
-					for entry := range ch {
-						if entry.Err != nil {
-							return err
-						}
-						if seen.Contains(entry.V.UID()) {
-							continue
-						}
-						seen.Add(entry.V.UID())
-						select {
-						case <-ctx.Done():
-							return fmt.Errorf("relist context canceled: %w", ctx.Err())
-						case r.dataCh <- entry.V:
-						}
-					}
-					return err
-				},
-				exponential.WithMaxAttempts(7),
-			)
-			if err != nil {
-				context.Log(ctx).Error(fmt.Sprintf("relister.List(%T) had persistent errors: %s", rt, err.Error()))
-			}
+			r.relistType(ctx, rt)
 		}
 	}
 	return nil
+}
+
+// relistType lists every object of rt and sends each one as a snapshot entry. This handles all exponential backoff
+// and retries. Errors are logged, not returned.
+func (r *Reader) relistType(ctx context.Context, rt types.Retrieve) {
+	var ch chan promises.Response[data.Entry]
+	// seen spans every attempt so that a retry after a partial list does not resend what was already sent.
+	seen := sets.Set[k8Types.UID]{}
+
+	err := back.Retry(
+		ctx,
+		func(ctx context.Context, _ exponential.Record) error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			var err error
+			ch, err = r.relister.List(ctx, rt)
+			if err != nil {
+				context.Log(ctx).Error(fmt.Sprintf("relister.List had supported type error: %s", err.Error()))
+				return err
+			}
+			for entry := range ch {
+				if entry.Err != nil {
+					// relist.Relister sends the error as its last value and then closes ch, so returning
+					// here leaves nothing blocked on the channel.
+					return entry.Err
+				}
+				if seen.Contains(entry.V.UID()) {
+					continue
+				}
+				seen.Add(entry.V.UID())
+				if !chans.Put(ctx, r.dataCh, entry.V) {
+					return fmt.Errorf("relist context canceled: %w", ctx.Err())
+				}
+			}
+			// The relister can drop its error once ctx is done, so a closed channel is only a complete list if ctx is not.
+			if ctx.Err() != nil {
+				return fmt.Errorf("relist context canceled: %w", ctx.Err())
+			}
+			return nil
+		},
+		exponential.WithMaxAttempts(7),
+	)
+	if err != nil {
+		context.Log(ctx).Error(fmt.Sprintf("relister.List(%v) had persistent errors: %s", rt, err.Error()))
+	}
 }
 
 // majorMinor extracts the major and minor version of the K8 cluster.

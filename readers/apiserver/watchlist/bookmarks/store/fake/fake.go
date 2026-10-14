@@ -1,12 +1,12 @@
 package fake
 
 import (
-	"errors"
-	"sync"
-
 	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/internal/private"
+	"github.com/gostdlib/base/concurrency/sync"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
+	"github.com/gostdlib/base/values/immutable"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -15,7 +15,7 @@ type Store struct {
 	mu         sync.Mutex
 	values     map[schema.GroupVersionResource]string
 	stores     map[schema.GroupVersionResource]string
-	storeCalls []map[schema.GroupVersionResource]string
+	storeCalls []immutable.Map[schema.GroupVersionResource, string]
 	deletes    []schema.GroupVersionResource
 	loadErr    error
 	storeErr   error
@@ -45,7 +45,7 @@ func (fakeStore *Store) Store(ctx context.Context, key schema.GroupVersionResour
 	fakeStore.mu.Lock()
 	defer fakeStore.mu.Unlock()
 
-	fakeStore.storeCalls = append(fakeStore.storeCalls, map[schema.GroupVersionResource]string{key: resourceVersion})
+	fakeStore.storeCalls = append(fakeStore.storeCalls, immutable.NewMap(map[schema.GroupVersionResource]string{key: resourceVersion}))
 	if fakeStore.storeErr != nil {
 		return fakeStore.storeErr
 	}
@@ -122,25 +122,20 @@ func (fakeStore *Store) Stored(key schema.GroupVersionResource) string {
 	return fakeStore.stores[key]
 }
 
-// StoreCalls returns copies of the Store calls.
-func (fakeStore *Store) StoreCalls() []map[schema.GroupVersionResource]string {
+// StoreCalls returns the Store calls made so far. Later calls are appended past the returned length, so the returned
+// view does not change.
+func (fakeStore *Store) StoreCalls() immutable.Slice[immutable.Map[schema.GroupVersionResource, string]] {
 	fakeStore.mu.Lock()
 	defer fakeStore.mu.Unlock()
 
-	calls := make([]map[schema.GroupVersionResource]string, len(fakeStore.storeCalls))
-	for i, call := range fakeStore.storeCalls {
-		calls[i] = make(map[schema.GroupVersionResource]string, len(call))
-		for key, resourceVersion := range call {
-			calls[i][key] = resourceVersion
-		}
-	}
-	return calls
+	return immutable.NewSlice(fakeStore.storeCalls)
 }
 
-// Deletes returns the keys deleted from the store so tests can assert stale bookmark cleanup.
-func (fakeStore *Store) Deletes() []schema.GroupVersionResource {
+// Deletes returns the keys deleted from the store so tests can assert stale bookmark cleanup. Later deletes are
+// appended past the returned length, so the returned view does not change.
+func (fakeStore *Store) Deletes() immutable.Slice[schema.GroupVersionResource] {
 	fakeStore.mu.Lock()
 	defer fakeStore.mu.Unlock()
 
-	return append([]schema.GroupVersionResource(nil), fakeStore.deletes...)
+	return immutable.NewSlice(fakeStore.deletes)
 }
