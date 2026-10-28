@@ -3,15 +3,20 @@ Package safety provides a set of safety checks for exposing Kubernetes resources
 
 Usage:
 
-	s := safety.New(ctx, in, out, safety.WithLogger(l))
+	s, err := safety.New(ctx, in, out)
+	if err != nil {
+		// Do something
+	}
 
 	// Read entries that have been scrubbed of sensitive information.
-	go func() {
-		// read entries from out
-		for e := range out {
-			// do something with e
-		}
-	}()
+	context.Pool(ctx).Submit(
+		ctx,
+		func() {
+			for e := range out {
+				// do something with e
+			}
+		},
+	)
 
 	// Send entries to be scrubbed.
 	for _, e := range entries {
@@ -30,19 +35,16 @@ import (
 )
 
 // Secrets provide a set of safety checks for exposing Kubernetes resources to the outside world.
-// It currently scrubs sensitive information from pods with containers that have
-// environment variables with names that match a secret regular expression.
+// It currently redacts the values of all environment variables in the containers, init containers and ephemeral
+// containers of pods and deployment pod templates.
 type Secrets struct {
 	in  <-chan data.Entry
 	out chan data.Entry
 }
 
-// Option is a functional option for the Secrets.
-type Option func(*Secrets) error
-
 // New creates a new Secrets. The pipeline is ready once New() is called successfully.
 // Closing in will close out.
-func New(ctx context.Context, in <-chan data.Entry, out chan data.Entry, options ...Option) (*Secrets, error) {
+func New(ctx context.Context, in <-chan data.Entry, out chan data.Entry) (*Secrets, error) {
 	if in == nil || out == nil {
 		panic("can't call Secrets.New() with a nil in or out channel")
 	}
@@ -52,13 +54,11 @@ func New(ctx context.Context, in <-chan data.Entry, out chan data.Entry, options
 		out: out,
 	}
 
-	for _, o := range options {
-		if err := o(s); err != nil {
-			return nil, err
-		}
+	// run parks on in for the life of the pipeline, so it goes on the unlimited Default pool rather than taking a
+	// slot from a Limited one.
+	if !context.Pool(ctx).Default().Submit(ctx, func() { s.run(ctx) }) {
+		return nil, fmt.Errorf("safety.New: could not start the scrubber: %w", context.Cause(ctx))
 	}
-
-	go s.run(ctx)
 	return s, nil
 }
 
@@ -81,16 +81,35 @@ func (s *Secrets) scrubber(ctx context.Context, e data.Entry) {
 			return
 		}
 		s.scrubPod(p)
+	case data.OTDeployment:
+		d, err := e.Deployment()
+		if err != nil {
+			context.Log(ctx).Error(fmt.Sprintf("safety.Secrets.informerRouter: error casting object type OTDeployment to deployment: %v", err))
+			return
+		}
+		d.Spec.Template.Spec = s.scrubPodSpec(d.Spec.Template.Spec)
 	}
 	s.out <- e
 }
 
 // scrubPod scrubs sensitive information from a pod.
 func (s *Secrets) scrubPod(p *corev1.Pod) {
-	spec := p.Spec
+	p.Spec = s.scrubPodSpec(p.Spec)
+}
+
+// scrubPodSpec scrubs sensitive information from every kind of container in a pod spec.
+func (s *Secrets) scrubPodSpec(spec corev1.PodSpec) corev1.PodSpec {
 	for i, cont := range spec.Containers {
 		spec.Containers[i] = s.scrubContainer(cont)
 	}
+	for i, cont := range spec.InitContainers {
+		spec.InitContainers[i] = s.scrubContainer(cont)
+	}
+	for i, cont := range spec.EphemeralContainers {
+		cont.Env = s.scrubEnv(cont.Env)
+		spec.EphemeralContainers[i] = cont
+	}
+	return spec
 }
 
 // This is the regular expression that is used to match environment variables that are sensitive.
@@ -108,9 +127,15 @@ var redacted = "REDACTED"
 
 // scrubContainer scrubs sensitive information from a container.
 func (s *Secrets) scrubContainer(c corev1.Container) corev1.Container {
-	for i, ev := range c.Env {
-		ev.Value = redacted
-		c.Env[i] = ev
-	}
+	c.Env = s.scrubEnv(c.Env)
 	return c
+}
+
+// scrubEnv redacts the value of every environment variable.
+func (s *Secrets) scrubEnv(env []corev1.EnvVar) []corev1.EnvVar {
+	for i, ev := range env {
+		ev.Value = redacted
+		env[i] = ev
+	}
+	return env
 }

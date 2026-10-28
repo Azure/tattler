@@ -1,11 +1,11 @@
 package preprocess
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
 	"github.com/Azure/tattler/data"
+	"github.com/gostdlib/base/context"
 
 	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
@@ -35,7 +35,7 @@ func TestRun(t *testing.T) {
 	out := make(chan data.Entry, 1)
 	want := data.MustNewEntry(&corev1.Node{ObjectMeta: v1.ObjectMeta{Name: "test"}}, data.STInformer, data.CTAdd)
 
-	_, err := New(context.Background(), in, out, procs)
+	_, err := New(t.Context(), in, out, procs)
 	if err != nil {
 		panic(err)
 	}
@@ -62,17 +62,17 @@ func TestProcessEntry(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "empty",
+			name:    "Error: an empty entry fails the processors",
 			in:      data.Entry{},
 			wantErr: true,
 		},
 		{
-			name: "node will have its name changed",
+			name: "Success: a node has its name changed",
 			in:   data.MustNewEntry(&corev1.Node{ObjectMeta: v1.ObjectMeta{Name: "bad name"}}, data.STInformer, data.CTAdd),
 			want: data.MustNewEntry(&corev1.Node{ObjectMeta: v1.ObjectMeta{Name: "test"}}, data.STInformer, data.CTAdd),
 		},
 		{
-			name: "pod will not have its name changed",
+			name: "Success: a pod keeps its name",
 			in:   data.MustNewEntry(&corev1.Pod{ObjectMeta: v1.ObjectMeta{Name: "bad name"}}, data.STInformer, data.CTDelete),
 			want: data.MustNewEntry(&corev1.Pod{ObjectMeta: v1.ObjectMeta{Name: "bad name"}}, data.STInformer, data.CTDelete),
 		},
@@ -81,7 +81,7 @@ func TestProcessEntry(t *testing.T) {
 	for _, test := range tests {
 		r := Runner{procs: procs}
 
-		err := r.processEntry(context.Background(), test.in)
+		err := r.processEntry(t.Context(), test.in)
 		switch {
 		case err == nil && test.wantErr:
 			t.Errorf("ProcessEntry(%s): got err == nil, want err != nil", test.name)

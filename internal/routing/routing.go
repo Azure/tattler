@@ -20,17 +20,25 @@ Usage:
 package routing
 
 import (
-	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/Azure/tattler/data"
 	metrics "github.com/Azure/tattler/internal/metrics/readers"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
+	"github.com/gostdlib/base/values/chans"
 )
 
 type route struct {
 	out  chan data.Entry
 	name string
+	// dropped counts entries dropped because out was full. It is a pointer so copies of the route share it.
+	dropped *atomic.Uint64
+}
+
+func newRoute(name string, out chan data.Entry) route {
+	return route{name: name, out: out, dropped: &atomic.Uint64{}}
 }
 
 type routes []route
@@ -43,7 +51,8 @@ type Router struct {
 	blocking bool
 }
 
-// Option is an optional argument to New().
+// Option configures New. Options are applied in order, so later options override earlier ones. All options are optional; zero values ask
+// for defaults.
 type Option func(b *Router) error
 
 // WithBlocking makes the router block when pushing data to a route that is not keeping up.
@@ -87,7 +96,7 @@ func (b *Router) Register(ctx context.Context, name string, ch chan data.Entry) 
 		return fmt.Errorf("routing.Batches.Register: cannot Register a route with a nil channel")
 	}
 
-	b.routes = append(b.routes, route{name: name, out: ch})
+	b.routes = append(b.routes, newRoute(name, ch))
 	return nil
 }
 
@@ -107,9 +116,8 @@ func (b *Router) Start(ctx context.Context) error {
 		return errors.New("routing.Batches: cannot start without registered routes")
 	}
 	ctx = context.WithoutCancel(ctx)
-	b.started = true
 
-	context.Tasks(ctx).Once(
+	err := context.Tasks(ctx).Once(
 		ctx,
 		"handleInput",
 		func(ctx context.Context) error {
@@ -120,6 +128,10 @@ func (b *Router) Start(ctx context.Context) error {
 			return nil
 		},
 	)
+	if err != nil {
+		return fmt.Errorf("routing.Batches.Start: could not start routing: %w", err)
+	}
+	b.started = true
 
 	return nil
 }
@@ -127,30 +139,33 @@ func (b *Router) Start(ctx context.Context) error {
 // handleInput receives data on the input channel and pushes it to the appropriate receivers.
 func (b *Router) handleInput(ctx context.Context) {
 	for entry := range b.in {
-		metrics.DataEntry(ctx, entry)
-		for _, r := range b.routes {
-			if err := b.push(ctx, r, entry); err != nil {
-				context.Log(ctx).Error(err.Error())
-			}
+		b.route(ctx, entry)
+	}
+}
+
+// route sends entry to every registered route.
+func (b *Router) route(ctx context.Context, entry data.Entry) {
+	metrics.DataEntry(ctx, entry)
+	for _, r := range b.routes {
+		// Logging every drop would allocate on each one, which is when the router is already behind. Logging at each
+		// power of two keeps the log bounded while still showing that drops continue and how many there have been.
+		if n := b.push(r, entry); n != 0 && n&(n-1) == 0 {
+			context.Log(ctx).Error(fmt.Sprintf("routing.Batches.push: dropped %d entries so far to slow receiver(%s)", n, r.name))
 		}
 	}
 }
 
-// push pushes a batches to a route.
-func (b *Router) push(ctx context.Context, r route, entry data.Entry) error {
+// push pushes a batches to a route. The router only stops when its input channel is closed, so a blocking push
+// waits on the route for as long as it takes.
+// It returns 0 if entry was delivered, or the number of entries dropped on the route so far if it was dropped.
+func (b *Router) push(r route, entry data.Entry) (dropped uint64) {
 	if b.blocking {
-		select {
-		case r.out <- entry:
-			return nil
-		case <-ctx.Done():
-			return fmt.Errorf("routing.Batches.push: context canceled while pushing to %s: %w", r.name, context.Cause(ctx))
-		}
+		r.out <- entry
+		return 0
 	}
 
-	select {
-	case r.out <- entry:
-	default:
-		return fmt.Errorf("routing.Batches.push: dropping data to slow receiver(%s)", r.name)
+	if !chans.TryPut(r.out, entry) {
+		return r.dropped.Add(1)
 	}
-	return nil
+	return 0
 }

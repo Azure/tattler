@@ -1,14 +1,14 @@
 package relist
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"reflect"
 	"testing"
 
 	"github.com/Azure/tattler/data"
+	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
 	"github.com/gostdlib/base/retry/exponential"
+	"github.com/kylelemons/godebug/pretty"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,7 +45,9 @@ func testGenericLister(result runtime.Object, err error) genericLister[runtime.O
 }
 
 func TestAdapter(t *testing.T) {
-	ctx := context.Background()
+	t.Parallel()
+
+	ctx := t.Context()
 
 	tests := []struct {
 		name          string
@@ -57,7 +59,7 @@ func TestAdapter(t *testing.T) {
 		wantRetriable bool
 	}{
 		{
-			name: "successful list with items",
+			name: "Success: a list with items gives an entry per item and the continue token",
 			lister: testGenericLister(&fakeListResult{
 				ListMeta: metav1.ListMeta{Continue: "next-token"},
 				Items: []*corev1.Pod{
@@ -81,7 +83,7 @@ func TestAdapter(t *testing.T) {
 			wantErr:      false,
 		},
 		{
-			name: "empty list",
+			name: "Success: an empty list gives no entries",
 			lister: testGenericLister(&fakeListResult{
 				ListMeta: metav1.ListMeta{Continue: ""},
 				Items:    []*corev1.Pod{},
@@ -92,7 +94,7 @@ func TestAdapter(t *testing.T) {
 			wantErr:      false,
 		},
 		{
-			name:         "lister returns error",
+			name:         "Error: the lister fails",
 			lister:       testGenericLister(nil, fmt.Errorf("api error: %w", exponential.ErrPermanent)),
 			options:      metav1.ListOptions{},
 			wantEntries:  0,
@@ -100,7 +102,7 @@ func TestAdapter(t *testing.T) {
 			wantErr:      true,
 		},
 		{
-			name: "invalid list result - no Items field",
+			name: "Error: the list result has no Items field",
 			lister: testGenericLister(&invalidListResult{
 				ListMeta: metav1.ListMeta{Continue: "token"},
 				Data:     []*corev1.Pod{},
@@ -141,14 +143,29 @@ func TestAdapter(t *testing.T) {
 }
 
 func TestListToEntries(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		listResult  runtime.Object
 		wantEntries int
-		wantErr     bool
+		// wantUIDs, when set, are the UIDs of the entries in order.
+		wantUIDs []types.UID
+		wantErr  bool
 	}{
 		{
-			name: "valid pod list",
+			name: "Success: a typed list holding value items gives each entry its own item",
+			listResult: &corev1.PodList{
+				Items: []corev1.Pod{
+					{ObjectMeta: metav1.ObjectMeta{Name: "pod1", UID: types.UID("uid1")}},
+					{ObjectMeta: metav1.ObjectMeta{Name: "pod2", UID: types.UID("uid2")}},
+				},
+			},
+			wantEntries: 2,
+			wantUIDs:    []types.UID{"uid1", "uid2"},
+		},
+		{
+			name: "Success: a list holding pointer items gives each entry its own item",
 			listResult: &fakeListResult{
 				Items: []*corev1.Pod{
 					{
@@ -166,10 +183,10 @@ func TestListToEntries(t *testing.T) {
 				},
 			},
 			wantEntries: 2,
-			wantErr:     false,
+			wantUIDs:    []types.UID{"uid1", "uid2"},
 		},
 		{
-			name: "empty pod list",
+			name: "Success: an empty list gives no entries",
 			listResult: &fakeListResult{
 				Items: []*corev1.Pod{},
 			},
@@ -177,13 +194,13 @@ func TestListToEntries(t *testing.T) {
 			wantErr:     false,
 		},
 		{
-			name:        "no Items field",
+			name:        "Error: the list result has no Items field",
 			listResult:  &invalidListResult{},
 			wantEntries: 0,
 			wantErr:     true,
 		},
 		{
-			name:        "nil input",
+			name:        "Error: the list result is nil",
 			listResult:  nil,
 			wantEntries: 0,
 			wantErr:     true,
@@ -194,12 +211,26 @@ func TestListToEntries(t *testing.T) {
 
 	for _, test := range tests {
 		entries, err := listToEntries(test.listResult)
+		// retryableList stops retrying on exponential.ErrPermanent, and a malformed list result never gets better.
+		if err != nil && !errors.Is(err, exponential.ErrPermanent) {
+			t.Errorf("TestListToEntries(%s): listToEntries() error should be wrapped with exponential.ErrPermanent", test.name)
+		}
 		if ec.continueTest(test.name, test.wantErr, err, t) {
 			continue
 		}
 
 		if len(entries) != test.wantEntries {
 			t.Errorf("TestListToEntries(%s): listToEntries() got %d entries, want %d", test.name, len(entries), test.wantEntries)
+		}
+
+		if test.wantUIDs != nil {
+			var gotUIDs []types.UID
+			for _, entry := range entries {
+				gotUIDs = append(gotUIDs, entry.UID())
+			}
+			if diff := pretty.Compare(test.wantUIDs, gotUIDs); diff != "" {
+				t.Errorf("TestListToEntries(%s): entry UIDs -want/+got:\n%s", test.name, diff)
+			}
 		}
 
 		// Verify all entries have correct source and change types
@@ -211,15 +242,12 @@ func TestListToEntries(t *testing.T) {
 				t.Errorf("TestListToEntries(%s): entry[%d].ChangeType() = %v, want %v", test.name, i, entry.ChangeType(), data.CTSnapshot)
 			}
 		}
-
-		// Verify permanent error wrapping for errors
-		if err != nil && !errors.Is(err, exponential.ErrPermanent) {
-			t.Errorf("TestListToEntries(%s): listToEntries() error should be wrapped with exponential.ErrPermanent", test.name)
-		}
 	}
 }
 
 func TestGetContinue(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name         string
 		obj          runtime.Object
@@ -227,7 +255,7 @@ func TestGetContinue(t *testing.T) {
 		wantErr      bool
 	}{
 		{
-			name: "valid object with continue token",
+			name: "Success: returns the continue token",
 			obj: &fakeListResult{
 				ListMeta: metav1.ListMeta{
 					Continue: "next-page-token",
@@ -237,7 +265,7 @@ func TestGetContinue(t *testing.T) {
 			wantErr:      false,
 		},
 		{
-			name: "valid object with empty continue token",
+			name: "Success: an empty continue token means the last page",
 			obj: &fakeListResult{
 				ListMeta: metav1.ListMeta{
 					Continue: "",
@@ -247,13 +275,13 @@ func TestGetContinue(t *testing.T) {
 			wantErr:      false,
 		},
 		{
-			name:         "nil object",
+			name:         "Error: the object is nil",
 			obj:          nil,
 			wantContinue: "",
 			wantErr:      true,
 		},
 		{
-			name: "object without ListMeta field",
+			name: "Error: the object has no ListMeta field",
 			obj: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pod",
@@ -268,62 +296,17 @@ func TestGetContinue(t *testing.T) {
 
 	for _, test := range tests {
 		continueToken, err := getContinue(test.obj)
+		// retryableList stops retrying on exponential.ErrPermanent, and a malformed list result never gets better.
+		if err != nil && !errors.Is(err, exponential.ErrPermanent) {
+			t.Errorf("TestGetContinue(%s): getContinue() error should be wrapped with exponential.ErrPermanent", test.name)
+		}
 		if ec.continueTest(test.name, test.wantErr, err, t) {
 			continue
 		}
 
 		if continueToken != test.wantContinue {
-			t.Errorf("TestGetContinue(%s): got %v, want %v", continueToken, test.wantContinue, test.name)
-			continue
+			t.Errorf("TestGetContinue(%s): got %v, want %v", test.name, continueToken, test.wantContinue)
 		}
-
-		// Verify permanent error wrapping for errors
-		if err != nil && !errors.Is(err, exponential.ErrPermanent) {
-			t.Errorf("TestGetContinue(%s): getContinue() error should be wrapped with exponential.ErrPermanent", test.name)
-		}
-	}
-}
-
-func TestListToEntriesReflection(t *testing.T) {
-	// Test that reflection works correctly with different pointer vs value types
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-pod",
-			UID:  types.UID("test-uid"),
-		},
-	}
-
-	// Test with pointer to struct
-	ptrResult := &fakeListResult{
-		Items: []*corev1.Pod{pod},
-	}
-
-	entries, err := listToEntries(ptrResult)
-	if err != nil {
-		t.Errorf("TestListToEntriesReflection: listToEntries() with pointer failed: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("TestListToEntriesReflection: listToEntries() with pointer got %d entries, want 1", len(entries))
-	}
-
-	// Test reflection edge cases
-	listValue := reflect.ValueOf(ptrResult)
-	if listValue.Kind() != reflect.Ptr {
-		t.Error("TestListToEntriesReflection: Expected pointer type")
-	}
-
-	listValue = listValue.Elem()
-	if listValue.Kind() != reflect.Struct {
-		t.Error("TestListToEntriesReflection: Expected struct type after dereferencing pointer")
-	}
-
-	itemsField := listValue.FieldByName("Items")
-	if !itemsField.IsValid() {
-		t.Error("TestListToEntriesReflection: Items field should be valid")
-	}
-
-	if itemsField.Len() != 1 {
-		t.Errorf("TestListToEntriesReflection: Items field length = %d, want 1", itemsField.Len())
 	}
 }
 
@@ -339,14 +322,29 @@ func BenchmarkListToEntries(b *testing.B) {
 		}
 	}
 
-	listResult := &fakeListResult{Items: items}
+	// Typed Kubernetes lists, such as PodList, hold their items as values, which is the path relists take.
+	podList := &corev1.PodList{Items: make([]corev1.Pod, len(items))}
+	for i, pod := range items {
+		podList.Items[i] = *pod
+	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := listToEntries(listResult)
-		if err != nil {
-			b.Fatalf("listToEntries() failed: %v", err)
-		}
+	benchmarks := []struct {
+		name string
+		list runtime.Object
+	}{
+		{name: "pointer items", list: &fakeListResult{Items: items}},
+		{name: "value items", list: podList},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := listToEntries(bm.list); err != nil {
+					b.Fatalf("listToEntries() failed: %v", err)
+				}
+			}
+		})
 	}
 }
 

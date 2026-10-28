@@ -1,11 +1,11 @@
 package relist
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 
 	"github.com/Azure/tattler/data"
+	"github.com/gostdlib/base/context"
 	"github.com/gostdlib/base/retry/exponential"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,8 +40,6 @@ func adapter[R runtime.Object](f genericLister[R]) listPage {
 
 // listToEntries converts a List() result to a slice of data.Entry.
 func listToEntries(listResult runtime.Object) ([]data.Entry, error) {
-	var events = make([]data.Entry, 0, 100)
-
 	if listResult == nil {
 		return nil, fmt.Errorf("listToEntries: listResult is nil: %w", exponential.ErrPermanent)
 	}
@@ -57,29 +55,23 @@ func listToEntries(listResult runtime.Object) ([]data.Entry, error) {
 		return nil, fmt.Errorf("listToEntries: no Items field found in %T: %w", listResult, exponential.ErrPermanent)
 	}
 
+	events := make([]data.Entry, 0, itemsField.Len())
+
 	for i := 0; i < itemsField.Len(); i++ {
 		item := itemsField.Index(i)
-		if item.CanInterface() {
-			// Get the interface value
-			itemInterface := item.Interface()
-
-			// Try as runtime.Object directly first (for pointer types)
-			if obj, ok := itemInterface.(runtime.Object); ok {
-				events = append(events, data.MustNewEntry(obj, data.STWatchList, data.CTSnapshot))
-				continue
-			}
-
-			// For value types, we need to take their address
+		// Typed lists hold value items, and runtime.Object is implemented on the pointer, so value items are addressed
+		// in place. Calling Interface() on the value first would copy the whole object to the heap only to discard it.
+		if item.Kind() != reflect.Pointer {
 			if !item.CanAddr() {
 				return nil, fmt.Errorf("listToEntries: item %d in %T is not addressable: %w", i, listResult, exponential.ErrPermanent)
 			}
-			itemPtr := item.Addr()
-			if !itemPtr.CanInterface() {
-				return nil, fmt.Errorf("listToEntries: item %d in %T is not interfaceable: %w", i, listResult, exponential.ErrPermanent)
-			}
-			if obj, ok := itemPtr.Interface().(runtime.Object); ok {
-				events = append(events, data.MustNewEntry(obj, data.STWatchList, data.CTSnapshot))
-			}
+			item = item.Addr()
+		}
+		if !item.CanInterface() {
+			continue
+		}
+		if obj, ok := item.Interface().(runtime.Object); ok {
+			events = append(events, data.MustNewEntry(obj, data.STWatchList, data.CTSnapshot))
 		}
 	}
 

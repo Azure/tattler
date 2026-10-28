@@ -2,13 +2,14 @@
 package configmap
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store"
 	"github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/internal/private"
+	"github.com/Azure/tattler/readers/apiserver/watchlist/internal/apierr"
 	"github.com/gostdlib/base/context"
+	"github.com/gostdlib/base/errors"
 	"github.com/gostdlib/base/retry/exponential"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,11 +30,8 @@ type Store struct {
 	name      string
 }
 
-// Option configures a Store.
-type Option func(*Store) error
-
 // New returns a Store that reads and writes bookmark resourceVersions to an existing ConfigMap.
-func New(clientset kubernetes.Interface, namespace, name string, options ...Option) (*Store, error) {
+func New(clientset kubernetes.Interface, namespace, name string) (*Store, error) {
 	namespace = strings.TrimSpace(namespace)
 	name = strings.TrimSpace(name)
 
@@ -51,11 +49,6 @@ func New(clientset kubernetes.Interface, namespace, name string, options ...Opti
 		clientset: clientset,
 		namespace: namespace,
 		name:      name,
-	}
-	for _, option := range options {
-		if err := option(store); err != nil {
-			return nil, err
-		}
 	}
 	return store, nil
 }
@@ -160,23 +153,13 @@ func retryAPIServer(ctx context.Context, operation func(context.Context) error) 
 	err := back.Retry(
 		ctx,
 		func(ctx context.Context, _ exponential.Record) error {
-			lastErr = permanentAPIServerError(operation(ctx))
+			lastErr = apierr.Permanent(operation(ctx))
 			return lastErr
 		},
 		exponential.WithMaxAttempts(maxAttempts),
 	)
 	if errors.Is(err, exponential.ErrPermanent) && lastErr != nil && !errors.Is(lastErr, exponential.ErrPermanent) {
 		return lastErr
-	}
-	return err
-}
-
-func permanentAPIServerError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsInvalid(err) {
-		return fmt.Errorf("%w: %w", err, exponential.ErrPermanent)
 	}
 	return err
 }

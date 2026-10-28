@@ -11,14 +11,14 @@ See the README.md for more information on how to use this package.
 package tattler
 
 import (
-	"context"
 	"fmt"
-	"sync"
 
 	"github.com/Azure/tattler/data"
 	preprocess "github.com/Azure/tattler/internal/preprocess"
 	"github.com/Azure/tattler/internal/routing"
 	"github.com/Azure/tattler/internal/safety"
+	"github.com/gostdlib/base/concurrency/sync"
+	"github.com/gostdlib/base/context"
 	"go.opentelemetry.io/otel/metric"
 
 	readersmetrics "github.com/Azure/tattler/internal/metrics/readers"
@@ -55,7 +55,7 @@ type Runner struct {
 	started bool
 }
 
-// Option is an option for New().
+// Options for New().
 type Option func(*Runner) error
 
 // WithPreProcessor appends PreProcessors to the Runner.
@@ -119,7 +119,10 @@ func New(ctx context.Context, in chan data.Entry, options ...Option) (*Runner, e
 		}
 	}
 
-	secrets, err := safety.New(ctx, secretsIn, in)
+	// The router must only see entries that have passed through the scrubber, so safety gets its own output
+	// channel. Reusing in here lets the router read unscrubbed entries and makes safety close in on shutdown.
+	routerIn := make(chan data.Entry, 1)
+	secrets, err := safety.New(ctx, secretsIn, routerIn)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +132,7 @@ func New(ctx context.Context, in chan data.Entry, options ...Option) (*Runner, e
 		rOpts = append(rOpts, routing.WithBlocking())
 	}
 
-	router, err := routing.New(ctx, in, rOpts...)
+	router, err := routing.New(ctx, routerIn, rOpts...)
 	if err != nil {
 		return nil, err
 	}
