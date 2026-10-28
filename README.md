@@ -24,9 +24,11 @@ In the future, we plan to support more object types and sources.
 Tattler provides a few key features over simply calling the API yourself:
 - Tattler can be used to filter fields(or change/add to them), filter object types, and filter sources
 - Tattler can be configured to read the information from multiple sources
-- Tattler removes all Pod container environment variables that might contain secrets^*
+- Tattler redacts the value of every container environment variable, which might contain secrets^*
 
-^* It is possible for secrets to show up in other places, but this is the most common place that leads to security issues.
+^* Values are replaced with `REDACTED` for containers, init containers and ephemeral containers, in both Pods and
+Deployment pod templates. It is possible for secrets to show up in other places, but this is the most common place
+that leads to security issues.
 
 ## Getting Started
 
@@ -67,16 +69,20 @@ var preProcs = []tattler.PreProcessor{
 			if err != nil {
 				return err
 			}
-			for _, f := range p.ManagedFields {
+			for i := 0; i < len(p.ManagedFields); i++ {
+				f := p.ManagedFields[i]
 				f.FieldsV1 = nil
+				p.ManagedFields[i] = f
 			}
 		case data.OTNode:
 			n, err := e.Node()
 			if err != nil {
 				return err
 			}
-			for _, f := range n.ManagedFields {
+			for i := 0; i < len(n.ManagedFields); i++ {
+				f := n.ManagedFields[i]
 				f.FieldsV1 = nil
+				n.ManagedFields[i] = f
 			}
 		}
 		return nil
@@ -90,132 +96,107 @@ Most use cases are going to be either to write to disk, send to another service 
 This example is a simple processor that writes the object to stdout.
 
 ```go
-func stdoutProcessor() chan batching.Batches {
-	stdOutCh := make(chan batching.Batches, 1)
+func stdoutProcessor() chan data.Entry {
+	in := make(chan data.Entry, 1)
 
 	go func() {
-		// This is the shorter form if you don't care about the source.
-		for batches := range stdOutCh {
-			for entry := range batches.Iter(context.Background() {
-				// I'm just going straight to the generic object, but you can get the type of object and choose
-				// a more specific method to call.
-				fmt.Println(entry.Object())
-			}
+		for entry := range in {
+			// entry.SourceType() and entry.ObjectType() can be used to filter. This goes straight to the generic
+			// object, but you can switch on the object type and call a more specific method such as entry.Pod().
+			fmt.Println(entry.ChangeType(), entry.Object())
 		}
 	}()
 
-	// Below is a commented out long form if you want to filter data by source.
-	/*
-	// Keys here are the source type, if you want to filter by source.
-	for batches := range stdOutCh {
-		// Keys here are the source type, if you want to filter by source.
-		for source, batch := range batches {
-			// The source is the type of object we're looking at.
-			fmt.Println("Source:", source)
-			// The keys are the UID of the object.
-			for _, entry := range batch {
-				fmt.Println("\t", entry.Object())
-			}
-		}
-	}
-	*/
-	return stdOutCh
+	return in
 }
 ```
 
 ### A Watchlist Reader
 
+When the Reader starts a resource without a bookmark, every existing object arrives as a `CTAdd` entry before live
+changes for that resource. On large clusters, expect a burst of entries at startup.
+
+With `watchlist.WithBookmarkStore`, the Reader saves its position (a resourceVersion bookmark per resource) and a restart
+resumes from it instead of resending every object. A bookmark the API server rejects (expired, or newer than the
+server after an etcd restore or rollback) is cleared and triggers an ordered recovery stream: existing objects arrive
+as `CTSnapshot` entries before subsequent live changes for that resource. Recovery uses WatchList initial events when
+available, or a consistent list followed by a watch from the list's resource version. That list can be large, so at
+startup it runs asynchronously instead of within `Run`'s startup deadline: `Run` can return before that resource's
+watch exists. Snapshots alone do not identify objects deleted before recovery began. Optional periodic relists remain
+independent of the live watch stream.
+
+`Close` returns an error if any resource's watcher stopped permanently, for example because a recovery list was
+forbidden. That error is also logged when it happens.
+
+#### Permissions
+
+The Reader needs `watch` on every resource type it reads. In addition:
+- `WithRelist` needs `list` on those resource types.
+- `WithBookmarkStore` with the ConfigMap store needs `get` and `update` on the bookmark ConfigMap, which must already
+  exist. It also needs `list` on the resource types: at startup the Reader lists one object to check that each stored
+  bookmark is not newer than the server, and on clusters without WatchList it recovers a rejected bookmark by listing.
+  Without `list`, the startup check is skipped and logged, but a recovery that has to list fails, and that resource's
+  watcher stops; the error is returned by `Close`.
+
 ```go
-// startWatchlist starts the watchlist reader and processor. The clientset is used to connect to the Kubernetes API Server.
-// This panics if it can't start the watchlist. This uses exponential retry to start the watchlist.
-func startWatchlists(ctx context.Context, t *tattler.Runner, clientset *kubernetes.Clientset) {
-	// Start a reader with exponential backoff.
-	// "github.com/Azure/retry/exponential"
-	boff, _ := exponential.New() // nolint:errcheck // Can't error on default
-
-	// Retry starting the watchlists. On busy clusters with low CPU availability, the watchlists may not start
-	// on the first attempt. We'll retry a few times before giving up. This is cheaper than crashing the program
-	// and having to restart it manually.
-	attempts := 0
-	boff.Retry(   // nolint:errcheck // This panics on too many retries.
-			ctx,
-			func(ctx context.Context, r exponential.Record) error {
-				// Setup reader for APIServer WatchList.
-				rWatch, err := watchlist.New(
-					ctx,
-					clientset,
-					watchlist.RTNamespace|watchlist.RTNode|watchlist.RTPod,
-					watchlist.WithFilterSize(filterSize),
-					watchlist.WithRelist(*relistTime),
-				)
-				if err != nil {
-					if attempts < 10 {
-						logger.Error("problem starting watchlists: %s", err, "attempts", attempts+1)
-						attempts++
-					} else {
-						fatalErr(logger, "final attempt at starting watchlists: %s", err)
-					}
-				}
-				return err
-			},
-	)
-
-	// Add it to the Tattler.Runner
-	if err := t.AddReader(ctx, rWatch); err != nil {
-		fatalErr(logger, "problem adding watchlist reader: %s", err)
+// startWatchlist creates the watchlist reader and adds it to the Runner. watchlist.New contacts the API server, so
+// wrap this in your retry policy if the cluster may be busy at startup.
+func startWatchlist(ctx context.Context, t *tattler.Runner, clientset kubernetes.Interface) error {
+	// Optional: persist bookmarks in an existing ConfigMap so a restart resumes where it left off.
+	// "github.com/Azure/tattler/readers/apiserver/watchlist/bookmarks/store/configmap"
+	bookmarks, err := configmap.New(clientset, "tattler", "tattler-bookmarks")
+	if err != nil {
+		return err
 	}
+
+	// "github.com/Azure/tattler/readers/apiserver/watchlist/types"
+	r, err := watchlist.New(
+		ctx,
+		clientset,
+		types.RTNamespace|types.RTNode|types.RTPod,
+		watchlist.WithRelist(24*time.Hour),
+		watchlist.WithBookmarkStore(bookmarks),
+	)
+	if err != nil {
+		return err
+	}
+
+	// The Runner calls SetOut and Run on the reader.
+	return t.AddReader(ctx, r)
 }
 ```
 
 ### Creating a Runner and tying it all together
 ```go
-const (
-	// batchTimespan is the maximum amount of time we'll wait before sending a batch of objects.
-	batchTimespan = 5 * time.Second
-	// batchSize is the maximum number of objects we'll send in a single batch.
-	batchSize     = 1000
-	// filterSize is the initial size of our filter for tracking objects we've seen. This automatically
-	// grows as needed, but starting with a larger size can reduce the number of resizes required.
-	filterSize    = 200000
-)
-
 ctx := context.Background()
 
 // runnerInput is the channel that the watchlist reader (and other readers you provide) will send data to.
 runnerInput := make(chan data.Entry, 1)
-// processorInput is the channel that the processor will read from. When add this input channel
-// during the AddProcessor() call.
-processorInput := stdoutProcessor()
 
 t, err := tattler.New(
 	ctx,
 	runnerInput,
-	batchTimespan,
-	tattler.WithBatcherOptions(batching.WithBatchSize(batchSize)),
-	tattler.WithPreProcessor(preProcs...), // Will show this in a sec
+	tattler.WithPreProcessor(preProcs...),
 )
-
 if err != nil {
-	fatalErr(logger, "problem creating new tattler instance to run our processors: %s", err)
+	panic(err)
 }
 
-if err := t.AddProcessor(ctx, "stdoutProcessor", processorInput); err != nil {
-	fatalErr(logger, "problem creating new tattler instance to run our processors: %s", err)
+// stdoutProcessor returns the channel the processor reads from. Processors must be added before Start().
+if err := t.AddProcessor(ctx, "stdoutProcessor", stdoutProcessor()); err != nil {
+	panic(err)
 }
 
-// Start a reader with exponential backoff.
-// "github.com/Azure/retry/exponential"
-boff, _ := exponential.New() // nolint:errcheck // Can't error on default
+if err := startWatchlist(ctx, t, clientset); err != nil {
+	panic(err)
+}
 
-// Starts the watchlist.
-startWatchlists(bkCtx, t, clientset)
-
-// Starts processing our data.
+// Starts the readers and begins processing our data.
 if err := t.Start(ctx); err != nil {
 	panic(err)
 }
 
-select{}
+select {}
 ```
 
 ## Contributing

@@ -22,6 +22,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8Types "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
@@ -30,6 +31,10 @@ import (
 )
 
 var back = exponential.Must(exponential.New())
+
+// bookmarkCheckBack paces bookmarkAhead's list attempts in seconds rather than back's fast policy, so the attempts
+// spread across bookmarkCheckTimeout instead of all landing in its first few hundred milliseconds.
+var bookmarkCheckBack = exponential.Must(exponential.New(exponential.WithPolicy(exponential.SecondsRetryPolicy())))
 
 // lister defines the interface for relisting resources
 type lister interface {
@@ -72,8 +77,8 @@ type Reader struct {
 type Option func(*Reader) error
 
 // WithRelist will set a duration in which we will relist all the objects in the APIServer using List() API calls.
-// This is useful to prevent split brain scenarios where the APIServer and tattler have
-// different views of the world. All objects returned by List() are marked as snapshots.
+// All objects returned by List() are marked as snapshots. These periodic snapshots are independent of live watch
+// events and may arrive out of order; absent objects do not produce deletions or a snapshot-completion signal.
 // The default is never. The minimum is 1 hour and the maximum is 7 days.
 func WithRelist(d time.Duration) Option {
 	return func(c *Reader) error {
@@ -90,6 +95,9 @@ func WithRelist(d time.Duration) Option {
 
 // WithBookmarkStore sets a store used to load and persist watch bookmark resourceVersions.
 // On Kubernetes versions before 1.29, the Reader continues without bookmark persistence.
+// Rejected bookmarks recover through an ordered snapshot/watch stream. Recovery snapshots do not identify
+// objects deleted before recovery began. Without WatchList, startup recovery lists asynchronously, so Run can return
+// before that resource's watch exists, and a permanent recovery failure is logged and returned by Close, not Run.
 func WithBookmarkStore(store store.Bookmarks) Option {
 	return func(c *Reader) error {
 		if store == nil {
@@ -216,6 +224,36 @@ type spawnWatcher func(options metav1.ListOptions) (watch.Interface, error)
 type watchSpec struct {
 	gvr   schema.GroupVersionResource
 	spawn spawnWatcher
+	list  func(context.Context, metav1.ListOptions) (runtime.Object, error)
+}
+
+//go:generate go tool github.com/gostdlib/base/values/generators/union -n recoveryMode -t initialEventsRecovery,listRecovery
+
+// initialEventsRecovery is a WatchList recovery: Added events are snapshots until the initial-events bookmark.
+type initialEventsRecovery struct{}
+
+// listRecovery is the list/watch fallback recovery: objects were listed at resourceVersion and the watch started there.
+type listRecovery struct {
+	objects         []runtime.Object
+	resourceVersion string
+}
+
+// recoveryWatcher keeps recovery snapshots on the same delivery path as live events.
+type recoveryWatcher struct {
+	watch.Interface
+	mode recoveryMode
+}
+
+func newInitialEventsWatcher(w watch.Interface) *recoveryWatcher {
+	rw := &recoveryWatcher{Interface: w}
+	rw.mode.SetinitialEventsRecovery(initialEventsRecovery{})
+	return rw
+}
+
+func newListRecoveryWatcher(w watch.Interface, objects []runtime.Object, resourceVersion string) *recoveryWatcher {
+	rw := &recoveryWatcher{Interface: w}
+	rw.mode.SetlistRecovery(listRecovery{objects: objects, resourceVersion: resourceVersion})
+	return rw
 }
 
 // withResourceVersion returns sp with the watch resuming from resourceVersion. A resumed WatchList watch does not
@@ -228,19 +266,6 @@ func withResourceVersion(sp spawnWatcher, resourceVersion string) spawnWatcher {
 	return func(options metav1.ListOptions) (watch.Interface, error) {
 		options.ResourceVersion = resourceVersion
 		// nil means the server does not support WatchList and connectWatcher fell back to a standard watch.
-		if options.SendInitialEvents != nil {
-			options.SendInitialEvents = ptr.To(false)
-		}
-		return sp(options)
-	}
-}
-
-// withoutInitialEvents returns sp with a WatchList watch starting at the most recent resourceVersion without sending
-// existing objects. It is used after a rejected bookmark, where relistGap() sends the current state as a snapshot
-// instead. A standard watch (nil SendInitialEvents, used when the server does not support WatchList) cannot start at
-// the most recent resourceVersion without one, so it still replays existing objects.
-func withoutInitialEvents(sp spawnWatcher) spawnWatcher {
-	return func(options metav1.ListOptions) (watch.Interface, error) {
 		if options.SendInitialEvents != nil {
 			options.SendInitialEvents = ptr.To(false)
 		}
@@ -274,9 +299,9 @@ func (r *Reader) storeBookmark(ctx context.Context, key schema.GroupVersionResou
 
 // clearBookmark deletes the stored bookmark for key if it is still resourceVersion. If another Reader sharing the store
 // has already replaced it, the replacement is left alone but not resumed from: this Reader did not see the events
-// before it, so it recovers with relistGap() instead.
+// before it, so it recovers with an ordered snapshot/watch stream instead.
 func (r *Reader) clearBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) error {
-	if r.bookmarkStore == nil || key.Empty() {
+	if r.bookmarkStore == nil || key.Empty() || resourceVersion == "" {
 		return nil
 	}
 	err := r.bookmarkStore.Delete(ctx, key, resourceVersion)
@@ -284,25 +309,6 @@ func (r *Reader) clearBookmark(ctx context.Context, key schema.GroupVersionResou
 		return nil
 	}
 	return fmt.Errorf("error clearing bookmark(%s): %w", bookmarkName(key), err)
-}
-
-// relistGap sends a snapshot of rt after one of its bookmarks was rejected, so consumers can reconcile the changes,
-// including deletes, that happened while the bookmark was stale. The watcher must already be running so nothing after
-// the list is missed. This runs in waitWatchers so Close() waits for it.
-func (r *Reader) relistGap(ctx context.Context, rt types.Retrieve) {
-	context.Log(ctx).Warn(fmt.Sprintf("bookmark for %v was rejected, relisting to recover changes missed while it was stale", rt))
-	// The Group gets a context that cannot be cancelled, because Group records a cancelled context as an error and
-	// Close() would report the cancellation it caused.
-	r.waitWatchers.Go(
-		context.WithoutCancel(ctx),
-		func(context.Context) error {
-			if ctx.Err() != nil {
-				return nil
-			}
-			r.relistType(ctx, rt)
-			return nil
-		},
-	)
 }
 
 // Run starts the Reader. This will start all watchers and begin sending data to the output channel.
@@ -410,12 +416,8 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, ws []watchSpec) (
 		return nil
 	}
 
-	// gap is set if any stored bookmark was rejected, which means changes were missed and rt must be relisted.
-	gap := false
-	watchers := make([]watch.Interface, len(ws))
-	for i, rw := range ws {
+	for _, rw := range ws {
 		key := rw.gvr
-		sp := rw.spawn
 		var resourceVersion string
 		if r.bookmarking && r.bookmarkStore != nil && !key.Empty() {
 			var err error
@@ -425,77 +427,117 @@ func (r *Reader) watch(ctx context.Context, rt types.Retrieve, ws []watchSpec) (
 				resourceVersion = ""
 			}
 		}
-		w, err := r.getWatcher(ctx, rt, withResourceVersion(sp, resourceVersion))
-		if err != nil && resourceVersion != "" && rejectedResourceVersion(err) {
-			if clearErr := r.clearBookmark(ctx, key, resourceVersion); clearErr != nil {
-				return clearErr
+		// cause is set when the bookmark cannot be resumed from, so startup recovers instead. A check that cannot be
+		// made must never block or fail startup, so it is logged and the bookmark is resumed from as before.
+		var cause error
+		if resourceVersion != "" && rw.list != nil {
+			ahead, err := bookmarkAhead(ctx, rw, resourceVersion, bookmarkCheckTimeout)
+			switch {
+			case err != nil:
+				context.Log(ctx).Warn(fmt.Sprintf("could not check bookmark(%s) %s against the server, resuming from it: %v", bookmarkName(key), resourceVersion, err))
+			case ahead:
+				cause = fmt.Errorf("bookmark %s is ahead of the server's current resourceVersion", resourceVersion)
 			}
+		}
+		var w watch.Interface
+		var err error
+		if cause == nil {
+			w, err = r.getWatcher(ctx, rt, withResourceVersion(rw.spawn, resourceVersion))
+			if err != nil && resourceVersion != "" && rejectedResourceVersion(err) {
+				cause = err
+			}
+		}
+		if cause != nil {
+			w, err = r.recoverStartup(ctx, rt, rw, resourceVersion, cause)
 			resourceVersion = ""
-			gap = true
-			w, err = r.getWatcher(ctx, rt, withoutInitialEvents(sp))
 		}
 		if err != nil {
 			return err
 		}
-		watchers[i] = w
-
 		// sync.Group skips a function whose context is already cancelled when its goroutine starts, which would leak w
 		// if Close() or a failed Run() cancels right after this. The Group gets a context that cannot be cancelled so
 		// w is always stopped, and handleWatcher gets ctx so it still exits as soon as ctx is cancelled.
 		r.waitWatchers.Go(
 			context.WithoutCancel(ctx),
 			func(context.Context) error {
-				defer w.Stop()
-				return r.handleWatcher(ctx, rt, key, resourceVersion, w, sp)
+				if w != nil {
+					defer w.Stop()
+				}
+				return r.handleWatcher(ctx, rt, key, resourceVersion, w, rw)
 			},
 		)
 	}
 
-	if gap {
-		r.relistGap(ctx, rt)
-	}
 	return nil
 }
 
+// recoverStartup clears a startup bookmark that cannot be resumed from, for cause, and returns the recovery watch to
+// start in its place. A failed clear does not fail Run: a store the Reader can read but not update would otherwise
+// fail every restart after an etcd restore, while an expired bookmark with that same store starts fine, since the
+// server rejects it inside the stream and handleWatcher recovers. A nil watch with a nil error means the server does
+// not support WatchList: listing can outlast the startup deadline and the server has already answered, so
+// handleWatcher lists after startup instead.
+func (r *Reader) recoverStartup(ctx context.Context, rt types.Retrieve, rw watchSpec, resourceVersion string, cause error) (watch.Interface, error) {
+	logRecovery(ctx, rw.gvr, cause)
+	r.clearRejectedBookmark(ctx, rw.gvr, resourceVersion)
+	w, err := r.getInitialEventsWatcher(ctx, rt, rw)
+	if errors.Is(err, errListRecovery) {
+		return nil, nil
+	}
+	return w, err
+}
+
 // handleWatcher handles a single watcher. It takes the watcher and hands it off to watchEvents. If watchEvents returns
-// an error and Context is not cancelled, our retrier will try and get a new watcher. This will block until the context
-// is canceled.
-func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schema.GroupVersionResource, resourceVersion string, w watch.Interface, sp spawnWatcher) error {
-	// gap is set when a bookmark was rejected while reconnecting, which means changes were missed and rt must be relisted.
-	gap := false
+// an error and Context is not cancelled, our retrier will try and get a new watcher. A nil w means a list recovery is
+// still needed before watching. This will block until the context is canceled.
+func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schema.GroupVersionResource, resourceVersion string, w watch.Interface, sp watchSpec) error {
+	// Keep requesting recovery snapshots until their completion bookmark has been delivered.
+	_, gap := w.(*recoveryWatcher)
+	gap = gap || w == nil
 	for {
-		rv, err := r.watchEvents(ctx, key, w)
-		if rv != "" {
-			resourceVersion = rv
-		}
-		if err != nil {
-			context.Log(ctx).Error(fmt.Sprintf("error watching %v events: %v", rt, err))
+		if w != nil {
+			rv, err := r.watchEvents(ctx, key, w)
+			if rv != "" {
+				resourceVersion = rv
+				gap = false
+			}
+			switch {
+			case staleResourceVersion(err):
+				// The APIServer accepts a watch at an expired resourceVersion and rejects it inside the stream, so
+				// this is the same recovery as a watch request it refused: the resourceVersion the stream was
+				// opened at, including a list recovery's version that watchEvents persisted, is cleared.
+				logRecovery(ctx, key, err)
+				r.clearRejectedBookmark(ctx, key, resourceVersion)
+				resourceVersion = ""
+				gap = true
+			case err != nil:
+				context.Log(ctx).Error(fmt.Sprintf("error watching %v events: %v", rt, err))
+			}
 		}
 		if ctx.Err() != nil {
 			return nil
 		}
 
-		err = back.Retry(
+		err := back.Retry(
 			ctx,
 			func(ctx context.Context, _ exponential.Record) error {
 				attemptedResourceVersion := resourceVersion != ""
-				wrapped := sp
-				switch {
-				case r.bookmarking && attemptedResourceVersion:
-					wrapped = withResourceVersion(sp, resourceVersion)
-				case gap:
-					wrapped = withoutInitialEvents(sp)
-				}
 				var err error
-				w, err = r.getWatcher(ctx, rt, wrapped)
+				switch {
+				case gap:
+					w, err = r.getRecoveryWatcher(ctx, rt, sp)
+				case r.bookmarking:
+					w, err = r.getWatcher(ctx, rt, withResourceVersion(sp.spawn, resourceVersion))
+				default:
+					w, err = r.getWatcher(ctx, rt, sp.spawn)
+				}
 				if err != nil {
 					switch {
 					case apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err):
 						return fmt.Errorf("%w: %w", err, exponential.ErrPermanent)
 					case attemptedResourceVersion && rejectedResourceVersion(err):
-						if clearErr := r.clearBookmark(ctx, key, resourceVersion); clearErr != nil {
-							return clearErr
-						}
+						logRecovery(ctx, key, err)
+						r.clearRejectedBookmark(ctx, key, resourceVersion)
 						resourceVersion = ""
 						gap = true
 					case !attemptedResourceVersion && invalidWatchRequest(err):
@@ -514,10 +556,21 @@ func (r *Reader) handleWatcher(ctx context.Context, rt types.Retrieve, key schem
 			context.Log(ctx).Error(fmt.Sprintf("critical error on watcher(%v) recreation: %v", rt, err))
 			return fmt.Errorf("error re-creating %v watcher: %w", rt, err)
 		}
-		if gap {
-			r.relistGap(ctx, rt)
-			gap = false
-		}
+	}
+}
+
+func logRecovery(ctx context.Context, key schema.GroupVersionResource, err error) {
+	context.Log(ctx).Warn(fmt.Sprintf("bookmark for %v was rejected, recovering with ordered snapshots: %v", key, err))
+}
+
+// clearRejectedBookmark clears a bookmark the server rejected, at startup or while a watcher is running. A failed
+// clear is logged, not returned: recovery goes on without it, as it persists a new version only once its snapshots
+// are delivered, and a restart that loads the leftover bookmark is rejected again and recovers the same way.
+// Returning the error would end the watcher for good, or fail Run at startup, for a bookmark that is already being
+// replaced.
+func (r *Reader) clearRejectedBookmark(ctx context.Context, key schema.GroupVersionResource, resourceVersion string) {
+	if err := r.clearBookmark(ctx, key, resourceVersion); err != nil {
+		context.Log(ctx).Error(fmt.Sprintf("%v, recovering without clearing it", err))
 	}
 }
 
@@ -545,6 +598,10 @@ func (r *Reader) connectWatcher(ctx context.Context, ch chan promises.Value[spaw
 			watcher, err = req.In(so)
 		}
 		req.Set(ctx, watcher, err) // Error only happens on context cancelation
+		if errors.Is(err, errListRecovery) {
+			// No watch was started, so there are no initial events to wait for.
+			continue
+		}
 
 		// We have no way in which we can wait for a watcher to finish its initial pool of events because we
 		// have no idea what that is (like a List()). So, we try to put a pause on it to give time for initial processing
@@ -587,7 +644,8 @@ func rejectedResourceVersion(err error) bool {
 
 // watchEvents watches the events from a watcher and sends them to the cache.
 // This is subbed in for .watchEvents in the Reader struct.
-// If the watcher can emit bookmarks, the string returned will be the resource version.
+// If the watcher can emit bookmarks, the string returned will be the resource version. It is returned even with an
+// error, as it is the last version persisted and the caller must clear it when the server rejected it in the stream.
 // This blocks until the watcher is closed.
 func (r *Reader) watchEvents(ctx context.Context, key schema.GroupVersionResource, watcher watch.Interface) (string, error) {
 	if r.fakeWatchEvents != nil {
@@ -598,6 +656,37 @@ func (r *Reader) watchEvents(ctx context.Context, key schema.GroupVersionResourc
 
 	var resourceVersion string
 	var storedResourceVersion string
+	var initialEvents bool
+	if recovery, ok := watcher.(*recoveryWatcher); ok {
+		mode := recovery.mode
+		// The watcher outlives recovery, so it must not keep the listed objects alive.
+		recovery.mode = recoveryMode{}
+		switch mode.Type() {
+		case recoveryModeTypeinitialEventsRecovery:
+			initialEvents = true
+		case recoveryModeTypelistRecovery:
+			list := mode.listRecovery()
+			for _, obj := range list.objects {
+				entry, err := data.NewEntry(obj, data.STWatchList, data.CTSnapshot)
+				if err != nil {
+					watcher.Stop()
+					return "", fmt.Errorf("error converting recovery snapshot: %w", err)
+				}
+				if !chans.Put(ctx, r.dataCh, entry) {
+					watcher.Stop()
+					return "", nil
+				}
+			}
+			// A list's version is safe to persist only after all its snapshots reached the output.
+			resourceVersion = list.resourceVersion
+			if resourceVersion != "" && r.storeBookmark(ctx, key, resourceVersion) == nil {
+				storedResourceVersion = resourceVersion
+			}
+		default:
+			watcher.Stop()
+			return "", fmt.Errorf("recovery watcher has unknown mode %v", mode.Type())
+		}
+	}
 
 	stopper := sync.OnceFunc(
 		func() {
@@ -606,26 +695,28 @@ func (r *Reader) watchEvents(ctx context.Context, key schema.GroupVersionResourc
 	)
 
 	for {
-		rv, err := r.watchEvent(ctx, ch, stopper)
+		rv, err := r.watchEvent(ctx, ch, stopper, &initialEvents)
 		if rv != "" {
 			resourceVersion = rv
 			if rv != storedResourceVersion && r.storeBookmark(ctx, key, rv) == nil {
 				storedResourceVersion = rv
 			}
 		}
-		// Always an io.EOF, so we don't log it, we just exit.
-		if err != nil {
-			break
+		switch {
+		case errors.Is(err, io.EOF):
+			// The watcher closed or ctx is done, which is a normal stop, so it is not logged.
+			return resourceVersion, nil
+		case err != nil:
+			return resourceVersion, err
 		}
 	}
-
-	return resourceVersion, nil
 }
 
 // watchEvent watches a single event from a watcher and sends it to the cache. If the event
 // is a bookmark, the resource version is returned. If the context is canceled or the input channel
-// is closed, io.EOF is returned. If it is a watch.Error, the error is logged and nil is returned.
-func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper func()) (string, error) {
+// is closed, io.EOF is returned. If it is a watch.Error rejecting the stream's resourceVersion as stale, the watcher
+// is stopped and that error is returned; any other watch.Error is logged and nil is returned.
+func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper func(), initialEvents *bool) (string, error) {
 	// Get keeps returning buffered events after ctx is done, so anything but ResultOK stops the watcher. Close()
 	// cancels ctx and then waits for every watcher to exit.
 	event, res := chans.Get(ctx, ch)
@@ -636,12 +727,33 @@ func (r *Reader) watchEvent(ctx context.Context, ch <-chan watch.Event, stopper 
 	metrics.WatchEvent(ctx, event)
 	switch event.Type {
 	case watch.Bookmark:
-		return event.Object.(metav1.Object).GetResourceVersion(), nil
+		obj := event.Object.(metav1.Object)
+		if *initialEvents {
+			// Ordinary bookmarks must not let a reconnect skip an incomplete recovery snapshot.
+			if obj.GetAnnotations()[metav1.InitialEventsAnnotationKey] != "true" {
+				return "", nil
+			}
+			*initialEvents = false
+		}
+		return obj.GetResourceVersion(), nil
 	case watch.Error:
+		// The APIServer does not refuse a watch at an expired resourceVersion: it opens the stream, sends this
+		// error as its only event and closes it (k8s.io/apiserver pkg/storage/cacher newErrWatcher), so the
+		// rejection has to be read from the stream.
+		if err := apierrors.FromObject(event.Object); staleResourceVersion(err) {
+			stopper()
+			return "", fmt.Errorf("watch stream rejected its resourceVersion: %w", err)
+		}
 		context.Log(ctx).Error(fmt.Sprintf("Watch Error: %v", event.Object))
 		return "", nil
 	}
-	entry, err := data.WatchEventToEntry(event)
+	var entry data.Entry
+	var err error
+	if *initialEvents && event.Type == watch.Added {
+		entry, err = data.NewEntry(event.Object, data.STWatchList, data.CTSnapshot)
+	} else {
+		entry, err = data.WatchEventToEntry(event)
+	}
 	if err != nil {
 		context.Log(ctx).Error(fmt.Sprintf("error converting watch event to entry: %v", err))
 		return "", nil

@@ -53,10 +53,10 @@ func New(clientset ClientsetInterface) (*Relister, error) {
 // to get a channel of data.Entry objects. Some resource types (like RBAC) have multiple listers.
 func makePagers(clientset ClientsetInterface) map[types.Retrieve][]listPage {
 	return map[types.Retrieve][]listPage{
-		types.RTNode:              {adapter(clientset.CoreV1().Nodes().List)},
-		types.RTPod:               {adapter(clientset.CoreV1().Pods(metav1.NamespaceAll).List)},
-		types.RTNamespace:         {adapter(clientset.CoreV1().Namespaces().List)},
-		types.RTPersistentVolume:  {adapter(clientset.CoreV1().PersistentVolumes().List)},
+		types.RTNode:             {adapter(clientset.CoreV1().Nodes().List)},
+		types.RTPod:              {adapter(clientset.CoreV1().Pods(metav1.NamespaceAll).List)},
+		types.RTNamespace:        {adapter(clientset.CoreV1().Namespaces().List)},
+		types.RTPersistentVolume: {adapter(clientset.CoreV1().PersistentVolumes().List)},
 		types.RTRBAC: {
 			adapter(clientset.RbacV1().Roles(metav1.NamespaceAll).List),
 			adapter(clientset.RbacV1().RoleBindings(metav1.NamespaceAll).List),
